@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Bundled ffmpeg binaries (fetch with npm run fetch-ffmpeg)
+src-tauri/binaries/ffmpeg*
+!src-tauri/binaries/.gitkeep
+

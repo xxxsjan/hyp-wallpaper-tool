@@ -18,6 +18,8 @@ const scanning = ref(false);
 const exporting = ref(false);
 const error = ref("");
 const status = ref("");
+const toast = ref("");
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
 const result = ref<ScanResult | null>(null);
 
 const filterKind = ref<"wallpaper" | "image" | "video" | "urls">("wallpaper");
@@ -29,12 +31,28 @@ const previewLoading = ref<Set<string>>(new Set());
 const lightbox = ref<{ entry: CacheEntry; url: string } | null>(null);
 const urlThumbErrors = ref<Set<string>>(new Set());
 
+type GachaGame = "genshin" | "starrail";
 const gachaOpen = ref(false);
+const gachaGame = ref<GachaGame>("genshin");
 const gachaLoading = ref(false);
 const gachaResult = ref<GachaUrlResult | null>(null);
 const gachaCopied = ref(false);
 const gachaError = ref("");
 const gachaStatus = ref("");
+
+const gachaTitle = computed(() =>
+  gachaGame.value === "starrail" ? "崩铁抽卡地址" : "原神抽卡地址",
+);
+const gachaHint = computed(() =>
+  gachaGame.value === "starrail"
+    ? "先在游戏内打开「跃迁 → 详情/历史记录」并等待加载完成，再点「获取」。仅读取本地缓存，不拉取记录。"
+    : "先在游戏内打开「祈愿 → 历史记录」并等待加载完成，再点「获取」。仅读取本地缓存，不拉取记录。",
+);
+const gachaSubtitle = computed(() =>
+  gachaGame.value === "starrail"
+    ? "从本地游戏缓存读取跃迁历史 URL"
+    : "从本地游戏缓存读取祈愿历史 URL",
+);
 
 const showingVideos = computed(() => filterKind.value === "video");
 const showingUrls = computed(() => filterKind.value === "urls");
@@ -81,15 +99,65 @@ const selectedCount = computed(() =>
   showingVideos.value ? selectedVideos.value.size : selected.value.size,
 );
 
+/** Only currently checked items are exportable targets. */
+const exportEntryPaths = computed(() => {
+  if (showingVideos.value || showingUrls.value) return [] as string[];
+  return [...selected.value];
+});
+
+const exportVideoUrls = computed(() => {
+  if (!showingVideos.value) return [] as string[];
+  return [...selectedVideos.value];
+});
+
+const canExport = computed(() => selectedCount.value > 0 && !exporting.value);
+
+const canExportAsPng = computed(() => {
+  if (!canExport.value || showingVideos.value || showingUrls.value) return false;
+  const byPath = new Map(
+    (result.value?.entries ?? []).map((e) => [e.path, e] as const),
+  );
+  return exportEntryPaths.value.some((p) => byPath.get(p)?.extension === "webp");
+});
+
+const canExportAsMp4 = computed(() => {
+  if (!canExport.value || !showingVideos.value) return false;
+  const byUrl = new Map(videoGroups.value.map((g) => [g.url, g] as const));
+  return exportVideoUrls.value.some((u) => byUrl.get(u)?.extension === "webm");
+});
+
 const exportLabel = computed(() => {
   if (exporting.value) return "导出中…";
+  if (!selectedCount.value) return "请先勾选";
   if (showingVideos.value) {
-    return selectedCount.value
-      ? `合并导出 (${selectedCount.value})`
-      : "合并导出视频";
+    return canExportAsMp4.value
+      ? `导出原格式 (${selectedCount.value})`
+      : `导出选中 (${selectedCount.value})`;
   }
-  if (selectedCount.value) return `导出选中 (${selectedCount.value})`;
-  return filterKind.value === "image" ? "导出图片" : "导出壁纸";
+  if (canExportAsPng.value) {
+    return `导出原格式 (${selectedCount.value})`;
+  }
+  return `导出选中 (${selectedCount.value})`;
+});
+
+const exportPngLabel = computed(() => {
+  if (exporting.value) return "导出中…";
+  const byPath = new Map(
+    (result.value?.entries ?? []).map((e) => [e.path, e] as const),
+  );
+  const n = exportEntryPaths.value.filter(
+    (p) => byPath.get(p)?.extension === "webp",
+  ).length;
+  return n ? `导出为 PNG (${n})` : "导出为 PNG";
+});
+
+const exportMp4Label = computed(() => {
+  if (exporting.value) return "导出中…";
+  const byUrl = new Map(videoGroups.value.map((g) => [g.url, g] as const));
+  const n = exportVideoUrls.value.filter(
+    (u) => byUrl.get(u)?.extension === "webm",
+  ).length;
+  return n ? `导出为 MP4 (${n})` : "导出为 MP4";
 });
 
 async function init() {
@@ -103,7 +171,12 @@ async function init() {
 
 async function pickFolder() {
   const dir = await open({ directory: true, multiple: false });
-  if (typeof dir === "string") {
+  if (typeof dir !== "string") return;
+  try {
+    cachePath.value = await invoke<string>("resolve_cache_path", {
+      directory: dir,
+    });
+  } catch {
     cachePath.value = dir;
   }
 }
@@ -122,6 +195,7 @@ async function scan() {
     result.value = await invoke<ScanResult>("scan_cache", {
       directory: cachePath.value,
     });
+    cachePath.value = result.value.directory;
     status.value = `扫描完成：${result.value.total} 个文件，${result.value.wallpapers} 张壁纸，${result.value.entries.filter((e) => isImageEntry(e) && !e.likelyWallpaper).length} 张图片，${result.value.videos} 个可拼接视频，${result.value.urls} 条缓存地址`;
     const targets = [
       ...result.value.entries.filter((e) => e.likelyWallpaper),
@@ -203,6 +277,27 @@ function clearSelection() {
   selectedVideos.value = new Set();
 }
 
+function showToast(message: string) {
+  toast.value = message;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toast.value = "";
+    toastTimer = null;
+  }, 4200);
+}
+
+function onExportSuccess(message: string) {
+  error.value = "";
+  status.value = "";
+  showToast(message);
+  clearSelection();
+}
+
+function onExportError(message: string) {
+  status.value = "";
+  error.value = message;
+}
+
 async function openPreview(entry: CacheEntry) {
   if (!entry.exportable) return;
   let url = previews.value[entry.path];
@@ -218,78 +313,121 @@ async function openPreview(entry: CacheEntry) {
   lightbox.value = { entry, url };
 }
 
-async function doExport() {
+async function doExport(convertTo?: "png" | "mp4") {
   if (showingUrls.value) return;
+  if (!selectedCount.value) {
+    error.value = "请先勾选要导出的项目";
+    return;
+  }
   if (showingVideos.value) {
-    await doExportVideos();
+    await doExportVideos(convertTo === "mp4" ? "mp4" : undefined);
     return;
   }
 
-  const paths =
-    selected.value.size > 0
-      ? [...selected.value]
-      : filtered.value.filter((e) => e.exportable).map((e) => e.path);
+  const paths = exportEntryPaths.value;
 
   if (!paths.length) {
-    error.value = "没有可导出的文件";
+    error.value = "请先勾选要导出的项目";
     return;
+  }
+
+  if (convertTo === "png") {
+    const byPath = new Map(
+      (result.value?.entries ?? []).map((e) => [e.path, e] as const),
+    );
+    if (!paths.some((p) => byPath.get(p)?.extension === "webp")) {
+      error.value = "当前没有可转为 PNG 的 WebP";
+      return;
+    }
   }
 
   const destination = await open({
     directory: true,
     multiple: false,
-    title: "选择导出目录",
+    title: convertTo === "png" ? "选择 PNG 导出目录" : "选择导出目录",
   });
   if (typeof destination !== "string") return;
 
   exporting.value = true;
   error.value = "";
+  status.value = "";
   try {
     const res = await invoke<ExportResult>("export_entries", {
       paths,
       destination,
       onlyWallpapers: filterKind.value === "wallpaper",
+      convertTo: convertTo ?? null,
     });
-    status.value = `已导出 ${res.exported} 个文件到 ${res.destination}（跳过 ${res.skipped}）`;
+    if (res.exported <= 0) {
+      onExportError(
+        res.skipped
+          ? `没有成功导出的文件（跳过 ${res.skipped}）`
+          : "没有成功导出的文件",
+      );
+      return;
+    }
+    const fmt = convertTo === "png" ? "PNG" : "原格式";
+    onExportSuccess(
+      `导出成功：已导出 ${res.exported} 个${fmt}文件` +
+        (res.skipped ? `（跳过 ${res.skipped}）` : ""),
+    );
     await invoke("open_in_explorer", { path: destination });
   } catch (e) {
-    error.value = String(e);
+    onExportError(String(e));
   } finally {
     exporting.value = false;
   }
 }
 
-async function doExportVideos() {
-  const groups = videoGroups.value;
-  const urls =
-    selectedVideos.value.size > 0
-      ? [...selectedVideos.value]
-      : groups.filter((g) => g.exportable).map((g) => g.url);
+async function doExportVideos(convertTo?: "mp4") {
+  const urls = exportVideoUrls.value;
 
   if (!urls.length) {
-    error.value = "没有可导出的完整视频";
+    error.value = "请先勾选要导出的视频";
     return;
+  }
+
+  if (convertTo === "mp4") {
+    const byUrl = new Map(videoGroups.value.map((g) => [g.url, g] as const));
+    if (!urls.some((u) => byUrl.get(u)?.extension === "webm")) {
+      error.value = "当前没有可转为 MP4 的 WebM";
+      return;
+    }
   }
 
   const destination = await open({
     directory: true,
     multiple: false,
-    title: "选择视频导出目录",
+    title: convertTo === "mp4" ? "选择 MP4 导出目录" : "选择视频导出目录",
   });
   if (typeof destination !== "string") return;
 
   exporting.value = true;
   error.value = "";
+  status.value = "";
   try {
     const res = await invoke<ExportResult>("export_videos", {
       directory: cachePath.value,
       urls,
       destination,
+      convertTo: convertTo ?? null,
     });
-    status.value = `已合并导出 ${res.exported} 个视频到 ${res.destination}（跳过 ${res.skipped}）`;
+    if (res.exported <= 0) {
+      onExportError(
+        res.skipped
+          ? `没有成功导出的视频（跳过 ${res.skipped}）`
+          : "没有成功导出的视频",
+      );
+      return;
+    }
+    const fmt = convertTo === "mp4" ? "MP4" : "原格式";
+    onExportSuccess(
+      `导出成功：已合并导出 ${res.exported} 个${fmt}视频` +
+        (res.skipped ? `（跳过 ${res.skipped}）` : ""),
+    );
     await invoke("open_in_explorer", { path: destination });
   } catch (e) {
-    error.value = String(e);
+    onExportError(String(e));
   } finally {
     exporting.value = false;
   }
@@ -324,13 +462,26 @@ function closeGachaModal() {
   gachaOpen.value = false;
 }
 
+function selectGachaGame(game: GachaGame) {
+  if (gachaGame.value === game) return;
+  gachaGame.value = game;
+  gachaResult.value = null;
+  gachaCopied.value = false;
+  gachaError.value = "";
+  gachaStatus.value = "";
+}
+
 async function fetchGachaUrl() {
   gachaLoading.value = true;
   gachaCopied.value = false;
   gachaError.value = "";
   gachaStatus.value = "";
   try {
-    gachaResult.value = await invoke<GachaUrlResult>("get_gacha_url");
+    const cmd =
+      gachaGame.value === "starrail"
+        ? "get_star_rail_gacha_url"
+        : "get_gacha_url";
+    gachaResult.value = await invoke<GachaUrlResult>(cmd);
     gachaStatus.value = `已获取 ${gachaResult.value.game} 抽卡地址`;
   } catch (e) {
     gachaResult.value = null;
@@ -372,10 +523,10 @@ onMounted(init);
   <div class="app">
     <header class="hero">
       <div class="brand">
-        <p class="eyebrow">HoYoPlay Cache</p>
-        <h1>Wallpaper Tool</h1>
+        <p class="eyebrow">HYP Wallpaper Tool</p>
+        <h1>马哈鱼壁纸工具</h1>
         <p class="tagline">
-          识别启动器缓存里的壁纸、图片与视频分片，预览并导出，或合并还原完整视频。
+          获取启动器里的壁纸、图片与视频。
         </p>
       </div>
       <div class="hero-side">
@@ -413,7 +564,7 @@ onMounted(init);
           class="path"
           v-model="cachePath"
           spellcheck="false"
-          placeholder="Cache_Data 目录路径"
+          placeholder="可选 HYP\\1_1 或 Cache_Data 完整路径"
         />
         <button class="btn ghost" type="button" @click="pickFolder">
           浏览
@@ -456,10 +607,28 @@ onMounted(init);
           <button
             class="btn accent"
             type="button"
-            :disabled="exporting"
+            :disabled="!canExport"
             @click="doExport()"
           >
             {{ exportLabel }}
+          </button>
+          <button
+            v-if="canExportAsPng"
+            class="btn primary"
+            type="button"
+            :disabled="!canExport"
+            @click="doExport('png')"
+          >
+            {{ exportPngLabel }}
+          </button>
+          <button
+            v-if="canExportAsMp4"
+            class="btn primary"
+            type="button"
+            :disabled="!canExport"
+            @click="doExport('mp4')"
+          >
+            {{ exportMp4Label }}
           </button>
         </div>
         <div class="export-row" v-else>
@@ -671,17 +840,40 @@ onMounted(init);
       <div class="lightbox-panel gacha-modal" role="dialog" aria-modal="true">
         <header>
           <div>
-            <strong>原神抽卡地址</strong>
-            <span>从本地游戏缓存读取祈愿历史 URL</span>
+            <strong>{{ gachaTitle }}</strong>
+            <span>{{ gachaSubtitle }}</span>
           </div>
           <button class="btn ghost" type="button" @click="closeGachaModal">
             关闭
           </button>
         </header>
 
-        <p class="gacha-hint">
-          先在游戏内打开「祈愿 → 历史记录」并等待加载完成，再点「获取」。仅读取本地缓存，不拉取记录。
-        </p>
+        <div class="gacha-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            class="gacha-tab"
+            :class="{ active: gachaGame === 'genshin' }"
+            :aria-selected="gachaGame === 'genshin'"
+            :disabled="gachaLoading"
+            @click="selectGachaGame('genshin')"
+          >
+            原神
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="gacha-tab"
+            :class="{ active: gachaGame === 'starrail' }"
+            :aria-selected="gachaGame === 'starrail'"
+            :disabled="gachaLoading"
+            @click="selectGachaGame('starrail')"
+          >
+            崩铁
+          </button>
+        </div>
+
+        <p class="gacha-hint">{{ gachaHint }}</p>
 
         <div class="gacha-actions">
           <button
@@ -725,6 +917,10 @@ onMounted(init);
         </p>
       </div>
     </div>
+
+    <Transition name="toast">
+      <div v-if="toast" class="toast" role="status">{{ toast }}</div>
+    </Transition>
   </div>
 </template>
 
@@ -965,6 +1161,39 @@ h1 {
   color: var(--danger);
 }
 
+.toast {
+  position: fixed;
+  left: 50%;
+  top: 16px;
+  bottom: auto;
+  z-index: 100;
+  max-width: min(640px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  padding: 0.9rem 1.25rem;
+  border-radius: 14px;
+  border: 1px solid rgba(62, 207, 178, 0.45);
+  background: rgba(12, 28, 24, 0.98);
+  color: #e6fff7;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+  font-size: 0.95rem;
+  line-height: 1.45;
+  text-align: center;
+  pointer-events: none;
+}
+
+.toast-enter-active,
+.toast-leave-active {
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s ease;
+}
+
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-10px);
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -1090,6 +1319,43 @@ h1 {
 
 .gacha-modal {
   width: min(640px, 100%);
+}
+
+.gacha-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(18, 21, 26, 0.72);
+  border: 1px solid var(--line);
+}
+
+.gacha-tab {
+  flex: 1;
+  border: 0;
+  border-radius: 9px;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.gacha-tab:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.gacha-tab.active {
+  background: var(--bg2);
+  color: var(--text);
+}
+
+.gacha-tab:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .gacha-hint {

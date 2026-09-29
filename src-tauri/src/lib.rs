@@ -149,6 +149,112 @@ fn classify_entry(path: &Path) -> Result<CacheEntry, String> {
     })
 }
 
+fn path_name_eq(path: &Path, expected: &str) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.eq_ignore_ascii_case(expected))
+        .unwrap_or(false)
+}
+
+/// True if `dir` looks like a Chromium/HYP `Cache_Data` folder.
+fn looks_like_cache_data(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    if path_name_eq(dir, "Cache_Data") {
+        return true;
+    }
+    dir.join("index").is_file()
+        || dir.join("data_0").is_file()
+        || dir.join("data_1").is_file()
+}
+
+fn join_parts(base: &Path, parts: &[&str]) -> PathBuf {
+    let mut p = base.to_path_buf();
+    for part in parts {
+        p.push(part);
+    }
+    p
+}
+
+/// Shallow BFS for a `Cache_Data` directory under `root` (depth-limited).
+fn find_cache_data_under(root: &Path, max_depth: usize) -> Option<PathBuf> {
+    use std::collections::VecDeque;
+    let mut queue = VecDeque::from([(root.to_path_buf(), 0usize)]);
+    while let Some((dir, depth)) = queue.pop_front() {
+        if looks_like_cache_data(&dir) && path_name_eq(&dir, "Cache_Data") {
+            return Some(dir);
+        }
+        if depth >= max_depth {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                queue.push_back((path, depth + 1));
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a user-picked HYP path to the real `Cache_Data` directory.
+/// Accepts `...\HYP\1_1`, `...\fedata`, `...\Cache`, or already-`Cache_Data`.
+fn resolve_cache_data_dir(input: &Path) -> Result<PathBuf, String> {
+    if !input.exists() {
+        return Err(format!("目录不存在: {}", input.display()));
+    }
+    if !input.is_dir() {
+        return Err(format!("不是目录: {}", input.display()));
+    }
+
+    if looks_like_cache_data(input) {
+        return Ok(input.to_path_buf());
+    }
+
+    // Common parent prefixes → append remaining segments
+    const SUFFIXES: &[&[&str]] = &[
+        &["fedata", "Cache", "Cache_Data"],
+        &["Cache", "Cache_Data"],
+        &["Cache_Data"],
+    ];
+    for parts in SUFFIXES {
+        let candidate = join_parts(input, parts);
+        if looks_like_cache_data(&candidate) {
+            return Ok(candidate);
+        }
+    }
+
+    // Picked `HYP` (or similar): try version folders then fedata/Cache/Cache_Data
+    if let Ok(entries) = fs::read_dir(input) {
+        let mut version_dirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        // Prefer names like 1_1; otherwise any child
+        version_dirs.sort_by(|a, b| b.cmp(a));
+        for ver in version_dirs {
+            let candidate = join_parts(&ver, &["fedata", "Cache", "Cache_Data"]);
+            if looks_like_cache_data(&candidate) {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    if let Some(found) = find_cache_data_under(input, 4) {
+        return Ok(found);
+    }
+
+    Err(format!(
+        "未找到 Cache_Data。可选择 HYP\\1_1 或完整路径：{}",
+        input.display()
+    ))
+}
+
 #[tauri::command]
 fn default_cache_path() -> String {
     let appdata = std::env::var("APPDATA").unwrap_or_else(|_| {
@@ -169,11 +275,14 @@ fn default_cache_path() -> String {
 }
 
 #[tauri::command]
+fn resolve_cache_path(directory: String) -> Result<String, String> {
+    resolve_cache_data_dir(Path::new(&directory)).map(|p| p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 fn scan_cache(directory: String) -> Result<ScanResult, String> {
-    let dir = PathBuf::from(&directory);
-    if !dir.is_dir() {
-        return Err(format!("目录不存在: {}", directory));
-    }
+    let dir = resolve_cache_data_dir(Path::new(&directory))?;
+    let directory = dir.to_string_lossy().to_string();
 
     let video_groups = parse_video_groups(&dir)?;
     let cache_urls = parse_cache_urls(&dir)?;
@@ -265,14 +374,105 @@ fn preview_data_url(path: String) -> Result<String, String> {
     Ok(format!("data:{};base64,{}", mime, STANDARD.encode(bytes)))
 }
 
+fn convert_webp_file_to_png(src: &Path, dest: &Path) -> Result<(), String> {
+    let bytes = fs::read(src).map_err(|e| format!("读取失败: {e}"))?;
+    let img = image::load_from_memory(&bytes).map_err(|e| format!("解码 WebP 失败: {e}"))?;
+    img.save_with_format(dest, image::ImageFormat::Png)
+        .map_err(|e| format!("写入 PNG 失败: {e}"))
+}
+
+fn find_ffmpeg() -> Option<PathBuf> {
+    for candidate in bundled_ffmpeg_candidates() {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    which_ffmpeg("ffmpeg").or_else(|| which_ffmpeg("ffmpeg.exe"))
+}
+
+fn bundled_ffmpeg_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            out.push(dir.join("ffmpeg.exe"));
+            out.push(dir.join("ffmpeg"));
+            // NSIS / some install layouts keep extras one level up or in resources
+            out.push(dir.join("resources").join("ffmpeg.exe"));
+            if let Some(parent) = dir.parent() {
+                out.push(parent.join("ffmpeg.exe"));
+                out.push(parent.join("resources").join("ffmpeg.exe"));
+            }
+        }
+    }
+
+    // Dev / packaging folder: src-tauri/binaries
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+    out.push(manifest.join("ffmpeg.exe"));
+    out.push(manifest.join("ffmpeg-x86_64-pc-windows-msvc.exe"));
+
+    out
+}
+
+fn which_ffmpeg(name: &str) -> Option<PathBuf> {
+    let Ok(path_env) = std::env::var("PATH") else {
+        return None;
+    };
+    for dir in std::env::split_paths(&path_env) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn ffmpeg_missing_msg() -> String {
+    "未找到 ffmpeg。正式版安装包应已内置；开发环境请先运行 npm run fetch-ffmpeg。".into()
+}
+
+fn convert_webm_to_mp4(src: &Path, dest: &Path) -> Result<(), String> {
+    let ffmpeg = find_ffmpeg().ok_or_else(ffmpeg_missing_msg)?;
+    let status = std::process::Command::new(&ffmpeg)
+        .args([
+            "-y",
+            "-i",
+            &src.to_string_lossy(),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            &dest.to_string_lossy(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("启动 ffmpeg 失败: {e}"))?;
+    if !status.success() {
+        return Err("ffmpeg 转换 MP4 失败".into());
+    }
+    Ok(())
+}
+
+/// `convert_to`: `None` / `"original"` keep source format; `"png"` / `"mp4"` convert.
 #[tauri::command]
 fn export_entries(
     paths: Vec<String>,
     destination: String,
     only_wallpapers: bool,
+    convert_to: Option<String>,
 ) -> Result<ExportResult, String> {
     let dest = PathBuf::from(&destination);
     fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+
+    let convert = convert_to
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty() && s != "original");
 
     let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let mut exported = 0usize;
@@ -297,10 +497,39 @@ fn export_entries(
             continue;
         }
 
-        let out_name = format!("{}_{}.{}", entry.name, stamp, entry.extension);
-        let out_path = dest.join(&out_name);
-        match fs::copy(&src, &out_path) {
-            Ok(_) => {
+        let result = match convert.as_deref() {
+            Some("png") => {
+                if entry.extension != "webp" {
+                    skipped += 1;
+                    continue;
+                }
+                let out_name = format!("{}_{}.png", entry.name, stamp);
+                let out_path = dest.join(&out_name);
+                convert_webp_file_to_png(&src, &out_path).map(|_| out_path)
+            }
+            Some("mp4") => {
+                if entry.extension != "webm" {
+                    skipped += 1;
+                    continue;
+                }
+                let out_name = format!("{}_{}.mp4", entry.name, stamp);
+                let out_path = dest.join(&out_name);
+                convert_webm_to_mp4(&src, &out_path).map(|_| out_path)
+            }
+            Some(other) => {
+                return Err(format!("不支持的导出格式: {other}"));
+            }
+            None => {
+                let out_name = format!("{}_{}.{}", entry.name, stamp, entry.extension);
+                let out_path = dest.join(&out_name);
+                fs::copy(&src, &out_path)
+                    .map(|_| out_path)
+                    .map_err(|e| e.to_string())
+            }
+        };
+
+        match result {
+            Ok(out_path) => {
                 exported += 1;
                 files.push(out_path.to_string_lossy().to_string());
             }
@@ -321,10 +550,24 @@ fn export_videos(
     directory: String,
     urls: Vec<String>,
     destination: String,
+    convert_to: Option<String>,
 ) -> Result<ExportResult, String> {
-    let dir = PathBuf::from(&directory);
+    let dir = resolve_cache_data_dir(Path::new(&directory))?;
     let dest = PathBuf::from(&destination);
     fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+
+    let convert = convert_to
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty() && s != "original");
+    if let Some(fmt) = convert.as_deref() {
+        if fmt != "mp4" {
+            return Err(format!("视频不支持导出为 {fmt}"));
+        }
+        if find_ffmpeg().is_none() {
+            return Err(ffmpeg_missing_msg());
+        }
+    }
 
     let groups = parse_video_groups(&dir)?;
     let wanted: HashSet<&str> = urls.iter().map(|s| s.as_str()).collect();
@@ -346,6 +589,32 @@ fn export_videos(
         let stem = group
             .name
             .trim_end_matches(&format!(".{}", group.extension));
+
+        if convert.as_deref() == Some("mp4") {
+            if group.extension != "webm" {
+                skipped += 1;
+                continue;
+            }
+            let temp_name = format!("{stem}_{stamp}_tmp.webm");
+            let out_name = format!("{stem}_{stamp}.mp4");
+            let out_path = dest.join(&out_name);
+            match merge_shards_to_file(&group.shard_paths, &dest, &temp_name) {
+                Ok(temp_path) => {
+                    let converted = convert_webm_to_mp4(&temp_path, &out_path);
+                    let _ = fs::remove_file(&temp_path);
+                    match converted {
+                        Ok(()) => {
+                            exported += 1;
+                            files.push(out_path.to_string_lossy().to_string());
+                        }
+                        Err(_) => skipped += 1,
+                    }
+                }
+                Err(_) => skipped += 1,
+            }
+            continue;
+        }
+
         let out_name = format!("{stem}_{stamp}.{}", group.extension);
         match merge_shards_to_file(&group.shard_paths, &dest, &out_name) {
             Ok(path) => {
@@ -390,6 +659,11 @@ fn get_gacha_url() -> Result<GachaUrlResult, String> {
     gacha::find_gacha_url()
 }
 
+#[tauri::command]
+fn get_star_rail_gacha_url() -> Result<GachaUrlResult, String> {
+    gacha::find_star_rail_gacha_url()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -397,12 +671,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             default_cache_path,
+            resolve_cache_path,
             scan_cache,
             preview_data_url,
             export_entries,
             export_videos,
             open_in_explorer,
-            get_gacha_url
+            get_gacha_url,
+            get_star_rail_gacha_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

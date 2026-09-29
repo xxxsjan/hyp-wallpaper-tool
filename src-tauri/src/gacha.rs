@@ -1,5 +1,6 @@
-//! Extract Genshin Impact wish (gacha) history URL from local game cache,
-//! following the same approach as biuuu/genshin-wish-export.
+//! Extract wish / warp history URLs from local game cache.
+//! Genshin: same approach as biuuu/genshin-wish-export.
+//! Star Rail: same approach as biuuu/star-rail-warp-export.
 
 use regex::Regex;
 use serde::Serialize;
@@ -33,68 +34,15 @@ fn local_low() -> PathBuf {
     user_profile().join("AppData").join("LocalLow")
 }
 
-/// Detect installed game folders (CN / Global / Cloud), prefer locale-aware order.
-fn detect_game_types() -> Vec<&'static str> {
-    let mut list = Vec::new();
-    let low = local_low().join("miHoYo");
-
-    if low.join("原神").join("output_log.txt").is_file() {
-        list.push("原神");
-    }
-    if low
-        .join("Genshin Impact")
-        .join("output_log.txt")
-        .is_file()
-    {
-        list.push("Genshin Impact");
-    }
-
-    // Non-CN Windows locale → prefer Global first
-    let prefer_global = std::env::var("LANG")
+fn prefer_global_locale() -> bool {
+    std::env::var("LANG")
         .or_else(|_| std::env::var("LC_ALL"))
         .map(|l| !l.to_lowercase().starts_with("zh"))
         .unwrap_or_else(|_| {
-            // Fall back to UI language via GetUserDefaultUILanguage is heavy;
-            // check system locale env commonly set on Windows.
             std::env::var("SYSTEM_LOCALE")
                 .map(|l| !l.to_lowercase().starts_with("zh"))
                 .unwrap_or(false)
-        });
-    if prefer_global && list.len() > 1 {
-        list.reverse();
-    }
-
-    let cloud_log = local_app_data()
-        .join("miHoYo")
-        .join("GenshinImpactCloudGame")
-        .join("config")
-        .join("logs")
-        .join("MiHoYoSDK.log");
-    if cloud_log.is_file() {
-        list.push("cloud");
-    }
-
-    list
-}
-
-fn gacha_url_re() -> Regex {
-    // Same pattern as genshin-wish-export getData.js
-    Regex::new(r"https.+?auth_appid=webview_gacha.+?authkey=.+?game_biz=hk4e_\w+")
-        .expect("gacha url regex")
-}
-
-fn last_gacha_url(text: &str) -> Option<String> {
-    let re = gacha_url_re();
-    re.find_iter(text).last().map(|m| m.as_str().to_string())
-}
-
-fn extract_game_data_path(log_text: &str) -> Option<PathBuf> {
-    let re = Regex::new(r"[A-Za-z]:/.+(?:GenshinImpact_Data|YuanShen_Data)")
-        .expect("game path regex");
-    re.find(log_text).map(|m| {
-        // Log uses forward slashes; normalize for Windows
-        PathBuf::from(m.as_str().replace('/', "\\"))
-    })
+        })
 }
 
 fn file_mtime(path: &Path) -> SystemTime {
@@ -112,7 +60,6 @@ fn find_newest_data2(game_data: &Path) -> Option<PathBuf> {
 
     let mut candidates: Vec<PathBuf> = Vec::new();
 
-    // webCaches/Cache/Cache_Data/data_2
     let direct = web_caches
         .join("Cache")
         .join("Cache_Data")
@@ -121,7 +68,6 @@ fn find_newest_data2(game_data: &Path) -> Option<PathBuf> {
         candidates.push(direct);
     }
 
-    // webCaches/<version>/Cache/Cache_Data/data_2
     if let Ok(entries) = fs::read_dir(&web_caches) {
         for entry in entries.flatten() {
             let path = entry
@@ -143,7 +89,56 @@ fn read_lossy(path: &Path) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn read_from_pc_log(game_name: &str) -> Result<Option<GachaUrlResult>, String> {
+fn last_url_match(text: &str, re: &Regex) -> Option<String> {
+    re.find_iter(text).last().map(|m| m.as_str().to_string())
+}
+
+// ─── Genshin Impact ─────────────────────────────────────────────────────────
+
+fn detect_genshin_types() -> Vec<&'static str> {
+    let mut list = Vec::new();
+    let low = local_low().join("miHoYo");
+
+    if low.join("原神").join("output_log.txt").is_file() {
+        list.push("原神");
+    }
+    if low
+        .join("Genshin Impact")
+        .join("output_log.txt")
+        .is_file()
+    {
+        list.push("Genshin Impact");
+    }
+
+    if prefer_global_locale() && list.len() > 1 {
+        list.reverse();
+    }
+
+    let cloud_log = local_app_data()
+        .join("miHoYo")
+        .join("GenshinImpactCloudGame")
+        .join("config")
+        .join("logs")
+        .join("MiHoYoSDK.log");
+    if cloud_log.is_file() {
+        list.push("cloud");
+    }
+
+    list
+}
+
+fn genshin_url_re() -> Regex {
+    Regex::new(r"https.+?auth_appid=webview_gacha.+?authkey=.+?game_biz=hk4e_\w+")
+        .expect("genshin gacha url regex")
+}
+
+fn extract_genshin_data_path(log_text: &str) -> Option<PathBuf> {
+    let re = Regex::new(r"[A-Za-z]:/.+(?:GenshinImpact_Data|YuanShen_Data)")
+        .expect("genshin game path regex");
+    re.find(log_text).map(|m| PathBuf::from(m.as_str().replace('/', "\\")))
+}
+
+fn read_genshin_pc(game_name: &str) -> Result<Option<GachaUrlResult>, String> {
     let log_path = local_low()
         .join("miHoYo")
         .join(game_name)
@@ -153,7 +148,7 @@ fn read_from_pc_log(game_name: &str) -> Result<Option<GachaUrlResult>, String> {
     }
 
     let log_text = read_lossy(&log_path)?;
-    let Some(game_data) = extract_game_data_path(&log_text) else {
+    let Some(game_data) = extract_genshin_data_path(&log_text) else {
         return Ok(None);
     };
     if !game_data.is_dir() {
@@ -171,7 +166,7 @@ fn read_from_pc_log(game_name: &str) -> Result<Option<GachaUrlResult>, String> {
     };
 
     let cache_text = read_lossy(&data2)?;
-    let Some(url) = last_gacha_url(&cache_text) else {
+    let Some(url) = last_url_match(&cache_text, &genshin_url_re()) else {
         return Ok(None);
     };
 
@@ -182,7 +177,7 @@ fn read_from_pc_log(game_name: &str) -> Result<Option<GachaUrlResult>, String> {
     }))
 }
 
-fn read_from_cloud() -> Result<Option<GachaUrlResult>, String> {
+fn read_genshin_cloud() -> Result<Option<GachaUrlResult>, String> {
     let log_path = local_app_data()
         .join("miHoYo")
         .join("GenshinImpactCloudGame")
@@ -194,7 +189,7 @@ fn read_from_cloud() -> Result<Option<GachaUrlResult>, String> {
     }
 
     let text = read_lossy(&log_path)?;
-    let Some(url) = last_gacha_url(&text) else {
+    let Some(url) = last_url_match(&text, &genshin_url_re()) else {
         return Ok(None);
     };
 
@@ -207,7 +202,7 @@ fn read_from_cloud() -> Result<Option<GachaUrlResult>, String> {
 
 /// Locate the most recent wish-history URL from local Genshin logs / web cache.
 pub fn find_gacha_url() -> Result<GachaUrlResult, String> {
-    let games = detect_game_types();
+    let games = detect_genshin_types();
     if games.is_empty() {
         return Err(
             "未找到原神日志。请确认已安装并运行过游戏（原神 / Genshin Impact / 云原神）。"
@@ -218,9 +213,9 @@ pub fn find_gacha_url() -> Result<GachaUrlResult, String> {
     let mut last_err: Option<String> = None;
     for name in games {
         let result = if name == "cloud" {
-            read_from_cloud()
+            read_genshin_cloud()
         } else {
-            read_from_pc_log(name)
+            read_genshin_pc(name)
         };
 
         match result {
@@ -236,5 +231,110 @@ pub fn find_gacha_url() -> Result<GachaUrlResult, String> {
 
     Err(
         "未找到抽卡地址。请先在游戏内打开祈愿 → 历史记录，等待页面加载完成后再试。".into(),
+    )
+}
+
+// ─── Honkai: Star Rail ──────────────────────────────────────────────────────
+
+/// (company, folder, display_name) for Star Rail installs.
+fn detect_star_rail_logs() -> Vec<(PathBuf, &'static str)> {
+    let low = local_low();
+    let mut list: Vec<(PathBuf, &'static str)> = Vec::new();
+
+    let cn = low
+        .join("miHoYo")
+        .join("崩坏：星穹铁道")
+        .join("Player.log");
+    if cn.is_file() {
+        list.push((cn, "崩坏：星穹铁道"));
+    }
+
+    let global = low
+        .join("Cognosphere")
+        .join("Star Rail")
+        .join("Player.log");
+    if global.is_file() {
+        list.push((global, "Star Rail"));
+    }
+
+    if prefer_global_locale() && list.len() > 1 {
+        list.reverse();
+    }
+
+    list
+}
+
+fn star_rail_url_re() -> Regex {
+    // Same pattern as star-rail-warp-export getData.js
+    Regex::new(r"https[^?]+?\?[^?]+?&auth_appid=webview_gacha&.+?authkey=.+?&game_biz=hkrpg_")
+        .expect("star rail gacha url regex")
+}
+
+fn extract_star_rail_data_path(log_text: &str) -> Option<PathBuf> {
+    let re = Regex::new(r"(?i)[A-Za-z]:/.*?/StarRail_Data/")
+        .expect("star rail game path regex");
+    re.find(log_text).map(|m| {
+        // Keep trailing StarRail_Data as the data root (strip trailing slash)
+        let s = m.as_str().trim_end_matches('/').replace('/', "\\");
+        PathBuf::from(s)
+    })
+}
+
+fn read_star_rail_log(log_path: &Path, display: &str) -> Result<Option<GachaUrlResult>, String> {
+    let log_text = read_lossy(log_path)?;
+    let Some(game_data) = extract_star_rail_data_path(&log_text) else {
+        return Ok(None);
+    };
+    if !game_data.is_dir() {
+        return Err(format!(
+            "日志中的游戏目录不存在: {}",
+            game_data.display()
+        ));
+    }
+
+    let Some(data2) = find_newest_data2(&game_data) else {
+        return Err(format!(
+            "未找到 webCaches 缓存（请先在游戏内打开跃迁历史记录）: {}",
+            game_data.display()
+        ));
+    };
+
+    let cache_text = read_lossy(&data2)?;
+    let Some(url) = last_url_match(&cache_text, &star_rail_url_re()) else {
+        return Ok(None);
+    };
+
+    Ok(Some(GachaUrlResult {
+        url,
+        source: data2.to_string_lossy().to_string(),
+        game: display.to_string(),
+    }))
+}
+
+/// Locate the most recent warp-history URL from local Star Rail logs / web cache.
+pub fn find_star_rail_gacha_url() -> Result<GachaUrlResult, String> {
+    let logs = detect_star_rail_logs();
+    if logs.is_empty() {
+        return Err(
+            "未找到崩铁日志。请确认已安装并运行过游戏（崩坏：星穹铁道 / Star Rail）。"
+                .into(),
+        );
+    }
+
+    let mut last_err: Option<String> = None;
+    for (log_path, display) in logs {
+        match read_star_rail_log(&log_path, display) {
+            Ok(Some(found)) => return Ok(found),
+            Ok(None) => {}
+            Err(e) => last_err = Some(e),
+        }
+    }
+
+    if let Some(e) = last_err {
+        return Err(e);
+    }
+
+    Err(
+        "未找到抽卡地址。请先在游戏内打开跃迁 → 详情/历史记录，等待页面加载完成后再试。".into(),
     )
 }
