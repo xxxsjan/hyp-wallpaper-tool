@@ -1,10 +1,12 @@
 mod blockfile;
+mod gacha;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use blockfile::{
     merge_shards_to_file, parse_cache_urls, parse_video_groups, shard_owner_map, CacheUrl,
     VideoGroup,
 };
+use gacha::GachaUrlResult;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::fs;
@@ -383,6 +385,11 @@ fn open_in_explorer(path: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn get_gacha_url() -> Result<GachaUrlResult, String> {
+    gacha::find_gacha_url()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -394,7 +401,8 @@ pub fn run() {
             preview_data_url,
             export_entries,
             export_videos,
-            open_in_explorer
+            open_in_explorer,
+            get_gacha_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

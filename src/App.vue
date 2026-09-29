@@ -7,6 +7,7 @@ import type {
   CacheEntry,
   CacheUrl,
   ExportResult,
+  GachaUrlResult,
   ScanResult,
   VideoGroup,
 } from "./types";
@@ -27,6 +28,13 @@ const previews = ref<Record<string, string>>({});
 const previewLoading = ref<Set<string>>(new Set());
 const lightbox = ref<{ entry: CacheEntry; url: string } | null>(null);
 const urlThumbErrors = ref<Set<string>>(new Set());
+
+const gachaOpen = ref(false);
+const gachaLoading = ref(false);
+const gachaResult = ref<GachaUrlResult | null>(null);
+const gachaCopied = ref(false);
+const gachaError = ref("");
+const gachaStatus = ref("");
 
 const showingVideos = computed(() => filterKind.value === "video");
 const showingUrls = computed(() => filterKind.value === "urls");
@@ -305,6 +313,47 @@ function onUrlThumbError(url: string) {
   urlThumbErrors.value = next;
 }
 
+function openGachaModal() {
+  gachaOpen.value = true;
+  gachaCopied.value = false;
+  gachaError.value = "";
+  gachaStatus.value = "";
+}
+
+function closeGachaModal() {
+  gachaOpen.value = false;
+}
+
+async function fetchGachaUrl() {
+  gachaLoading.value = true;
+  gachaCopied.value = false;
+  gachaError.value = "";
+  gachaStatus.value = "";
+  try {
+    gachaResult.value = await invoke<GachaUrlResult>("get_gacha_url");
+    gachaStatus.value = `已获取 ${gachaResult.value.game} 抽卡地址`;
+  } catch (e) {
+    gachaResult.value = null;
+    gachaError.value = String(e);
+  } finally {
+    gachaLoading.value = false;
+  }
+}
+
+async function copyGachaUrl() {
+  if (!gachaResult.value?.url) return;
+  try {
+    await navigator.clipboard.writeText(gachaResult.value.url);
+    gachaCopied.value = true;
+    gachaStatus.value = "抽卡地址已复制到剪贴板";
+    window.setTimeout(() => {
+      gachaCopied.value = false;
+    }, 2000);
+  } catch (e) {
+    gachaError.value = String(e);
+  }
+}
+
 watch(filterKind, async () => {
   selected.value = new Set();
   selectedVideos.value = new Set();
@@ -329,26 +378,31 @@ onMounted(init);
           识别启动器缓存里的壁纸、图片与视频分片，预览并导出，或合并还原完整视频。
         </p>
       </div>
-      <div class="stats" v-if="result">
-        <div class="stat">
-          <span class="num">{{ result.total }}</span>
-          <span class="lbl">缓存文件</span>
-        </div>
-        <div class="stat">
-          <span class="num">{{ result.wallpapers }}</span>
-          <span class="lbl">壁纸</span>
-        </div>
-        <div class="stat">
-          <span class="num">{{ imageCount }}</span>
-          <span class="lbl">图片</span>
-        </div>
-        <div class="stat">
-          <span class="num">{{ result.videos }}</span>
-          <span class="lbl">可拼视频</span>
-        </div>
-        <div class="stat">
-          <span class="num">{{ result.urls }}</span>
-          <span class="lbl">缓存地址</span>
+      <div class="hero-side">
+        <button class="btn accent" type="button" @click="openGachaModal">
+          抽卡地址
+        </button>
+        <div class="stats" v-if="result">
+          <div class="stat">
+            <span class="num">{{ result.total }}</span>
+            <span class="lbl">缓存文件</span>
+          </div>
+          <div class="stat">
+            <span class="num">{{ result.wallpapers }}</span>
+            <span class="lbl">壁纸</span>
+          </div>
+          <div class="stat">
+            <span class="num">{{ imageCount }}</span>
+            <span class="lbl">图片</span>
+          </div>
+          <div class="stat">
+            <span class="num">{{ result.videos }}</span>
+            <span class="lbl">可拼视频</span>
+          </div>
+          <div class="stat">
+            <span class="num">{{ result.urls }}</span>
+            <span class="lbl">缓存地址</span>
+          </div>
         </div>
       </div>
     </header>
@@ -607,6 +661,70 @@ onMounted(init);
         <video v-else :src="lightbox.url" controls autoplay />
       </div>
     </div>
+
+    <div
+      v-if="gachaOpen"
+      class="lightbox"
+      @click.self="closeGachaModal"
+      @keydown.esc="closeGachaModal"
+    >
+      <div class="lightbox-panel gacha-modal" role="dialog" aria-modal="true">
+        <header>
+          <div>
+            <strong>原神抽卡地址</strong>
+            <span>从本地游戏缓存读取祈愿历史 URL</span>
+          </div>
+          <button class="btn ghost" type="button" @click="closeGachaModal">
+            关闭
+          </button>
+        </header>
+
+        <p class="gacha-hint">
+          先在游戏内打开「祈愿 → 历史记录」并等待加载完成，再点「获取」。仅读取本地缓存，不拉取记录。
+        </p>
+
+        <div class="gacha-actions">
+          <button
+            class="btn primary"
+            type="button"
+            :disabled="gachaLoading"
+            @click="fetchGachaUrl"
+          >
+            {{ gachaLoading ? "获取中…" : "获取抽卡地址" }}
+          </button>
+          <button
+            class="btn accent"
+            type="button"
+            :disabled="!gachaResult?.url"
+            @click="copyGachaUrl"
+          >
+            {{ gachaCopied ? "已复制" : "复制" }}
+          </button>
+        </div>
+
+        <p v-if="gachaStatus" class="status ok">{{ gachaStatus }}</p>
+        <p v-if="gachaError" class="status err">{{ gachaError }}</p>
+
+        <div class="gacha-card" v-if="gachaResult">
+          <div class="gacha-meta">
+            <span class="gacha-game">{{ gachaResult.game }}</span>
+            <code class="gacha-source" :title="gachaResult.source">{{
+              gachaResult.source
+            }}</code>
+          </div>
+          <textarea
+            class="gacha-url"
+            readonly
+            spellcheck="false"
+            :value="gachaResult.url"
+            @focus="($event.target as HTMLTextAreaElement).select()"
+          />
+        </div>
+        <p v-else-if="!gachaLoading && !gachaError" class="gacha-empty">
+          尚未获取抽卡地址。
+        </p>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -681,6 +799,13 @@ code {
   gap: 24px;
   align-items: end;
   margin-bottom: 22px;
+}
+
+.hero-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
 }
 
 .eyebrow {
@@ -963,6 +1088,78 @@ h1 {
   font-size: 0.85rem;
 }
 
+.gacha-modal {
+  width: min(640px, 100%);
+}
+
+.gacha-hint {
+  margin: 0 0 14px;
+  color: var(--muted);
+  line-height: 1.55;
+  font-size: 0.92rem;
+}
+
+.gacha-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.gacha-card {
+  margin-top: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(26, 31, 39, 0.78);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gacha-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: baseline;
+}
+
+.gacha-game {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.gacha-source {
+  color: var(--muted);
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.gacha-url {
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--bg0);
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+.gacha-empty {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .url-panel {
   display: flex;
   flex-direction: column;
@@ -1167,6 +1364,11 @@ h1 {
   .hero {
     flex-direction: column;
     align-items: start;
+  }
+
+  .hero-side {
+    align-items: flex-start;
+    width: 100%;
   }
 }
 </style>
