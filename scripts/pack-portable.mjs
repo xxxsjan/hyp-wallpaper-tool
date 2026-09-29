@@ -130,13 +130,13 @@ function gitCommitVersion(files, newVersion) {
 async function main() {
   const pkg = readJson(path.join(root, "package.json"));
   let version = pkg.version;
+  let bumpedFiles = null;
 
   const shouldBump = await askBumpVersion(version);
   if (shouldBump) {
     const oldVersion = version;
     version = bumpPatch(oldVersion);
-    const files = updateProjectVersions(oldVersion, version);
-    gitCommitVersion(files, version);
+    bumpedFiles = updateProjectVersions(oldVersion, version);
   } else {
     console.log(`保持版本 ${version}`);
   }
@@ -196,6 +196,12 @@ async function main() {
     const full = path.join(staging, name);
     const size = fs.statSync(full).size;
     console.log(`  ${name.padEnd(28)} ${size}`);
+  }
+
+  // Commit version bump only after a successful pack
+  if (bumpedFiles) {
+    console.log("==> Git commit version bump");
+    gitCommitVersion(bumpedFiles, version);
   }
 }
 
