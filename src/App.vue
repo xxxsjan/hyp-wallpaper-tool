@@ -2,7 +2,8 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { CacheEntry, ExportResult, ScanResult } from "./types";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import type { CacheEntry, CacheUrl, ExportResult, ScanResult, VideoGroup } from "./types";
 import { formatBytes } from "./types";
 
 const cachePath = ref("");
@@ -12,11 +13,20 @@ const error = ref("");
 const status = ref("");
 const result = ref<ScanResult | null>(null);
 
-const filterKind = ref<"all" | "wallpaper" | "image" | "video" | "chunk">("wallpaper");
+const filterKind = ref<"wallpaper" | "image" | "video" | "urls">("wallpaper");
 const selected = ref<Set<string>>(new Set());
+const selectedVideos = ref<Set<string>>(new Set());
 const previews = ref<Record<string, string>>({});
 const previewLoading = ref<Set<string>>(new Set());
 const lightbox = ref<{ entry: CacheEntry; url: string } | null>(null);
+const urlThumbErrors = ref<Set<string>>(new Set());
+
+const showingVideos = computed(() => filterKind.value === "video");
+const showingUrls = computed(() => filterKind.value === "urls");
+
+function isImageEntry(e: CacheEntry): boolean {
+  return ["JPEG", "PNG", "WEBP", "GIF"].includes(e.kind);
+}
 
 const filtered = computed(() => {
   const entries = result.value?.entries ?? [];
@@ -24,19 +34,37 @@ const filtered = computed(() => {
     case "wallpaper":
       return entries.filter((e) => e.likelyWallpaper);
     case "image":
-      return entries.filter((e) =>
-        ["JPEG", "PNG", "WEBP", "GIF"].includes(e.kind),
-      );
+      return entries.filter((e) => isImageEntry(e) && !e.likelyWallpaper);
     case "video":
-      return entries.filter((e) => ["WEBM", "MP4"].includes(e.kind));
-    case "chunk":
-      return entries.filter((e) => e.kind === "chunk" || e.kind === "unknown");
-    default:
-      return entries;
+    case "urls":
+      return [];
   }
 });
 
-const selectedCount = computed(() => selected.value.size);
+const imageCount = computed(
+  () =>
+    (result.value?.entries ?? []).filter(
+      (e) => isImageEntry(e) && !e.likelyWallpaper,
+    ).length,
+);
+
+const videoGroups = computed(() => result.value?.videoGroups ?? []);
+const cacheUrls = computed(() => result.value?.cacheUrls ?? []);
+
+const selectedCount = computed(() =>
+  showingVideos.value ? selectedVideos.value.size : selected.value.size,
+);
+
+const exportLabel = computed(() => {
+  if (exporting.value) return "导出中…";
+  if (showingVideos.value) {
+    return selectedCount.value
+      ? `合并导出 (${selectedCount.value})`
+      : "合并导出视频";
+  }
+  if (selectedCount.value) return `导出选中 (${selectedCount.value})`;
+  return filterKind.value === "image" ? "导出图片" : "导出壁纸";
+});
 
 async function init() {
   try {
@@ -60,16 +88,18 @@ async function scan() {
   error.value = "";
   status.value = "";
   selected.value = new Set();
+  selectedVideos.value = new Set();
   previews.value = {};
+  urlThumbErrors.value = new Set();
   try {
     result.value = await invoke<ScanResult>("scan_cache", {
       directory: cachePath.value,
     });
-    status.value = `扫描完成：${result.value.total} 个文件，${result.value.wallpapers} 张疑似壁纸`;
-    // Prefetch previews for visible wallpapers (limit concurrency)
-    const targets = result.value.entries
-      .filter((e) => e.likelyWallpaper)
-      .slice(0, 24);
+    status.value = `扫描完成：${result.value.total} 个文件，${result.value.wallpapers} 张壁纸，${result.value.entries.filter((e) => isImageEntry(e) && !e.likelyWallpaper).length} 张图片，${result.value.videos} 个可拼接视频，${result.value.urls} 条缓存地址`;
+    const targets = [
+      ...result.value.entries.filter((e) => e.likelyWallpaper),
+      ...result.value.entries.filter((e) => isImageEntry(e) && !e.likelyWallpaper),
+    ].slice(0, 24);
     await loadPreviews(targets);
   } catch (e) {
     error.value = String(e);
@@ -114,7 +144,23 @@ function toggleSelect(path: string) {
   selected.value = next;
 }
 
+function toggleVideo(url: string) {
+  const next = new Set(selectedVideos.value);
+  if (next.has(url)) next.delete(url);
+  else next.add(url);
+  selectedVideos.value = next;
+}
+
 function selectVisible() {
+  if (showingUrls.value) return;
+  if (showingVideos.value) {
+    const next = new Set(selectedVideos.value);
+    for (const g of videoGroups.value) {
+      if (g.exportable) next.add(g.url);
+    }
+    selectedVideos.value = next;
+    return;
+  }
   const next = new Set(selected.value);
   for (const e of filtered.value) {
     if (e.exportable) next.add(e.path);
@@ -124,6 +170,7 @@ function selectVisible() {
 
 function clearSelection() {
   selected.value = new Set();
+  selectedVideos.value = new Set();
 }
 
 async function openPreview(entry: CacheEntry) {
@@ -141,13 +188,17 @@ async function openPreview(entry: CacheEntry) {
   lightbox.value = { entry, url };
 }
 
-async function doExport(onlyWallpapers: boolean) {
+async function doExport() {
+  if (showingUrls.value) return;
+  if (showingVideos.value) {
+    await doExportVideos();
+    return;
+  }
+
   const paths =
     selected.value.size > 0
       ? [...selected.value]
-      : (result.value?.entries ?? [])
-          .filter((e) => (onlyWallpapers ? e.likelyWallpaper : e.exportable))
-          .map((e) => e.path);
+      : filtered.value.filter((e) => e.exportable).map((e) => e.path);
 
   if (!paths.length) {
     error.value = "没有可导出的文件";
@@ -167,7 +218,7 @@ async function doExport(onlyWallpapers: boolean) {
     const res = await invoke<ExportResult>("export_entries", {
       paths,
       destination,
-      onlyWallpapers,
+      onlyWallpapers: filterKind.value === "wallpaper",
     });
     status.value = `已导出 ${res.exported} 个文件到 ${res.destination}（跳过 ${res.skipped}）`;
     await invoke("open_in_explorer", { path: destination });
@@ -178,7 +229,64 @@ async function doExport(onlyWallpapers: boolean) {
   }
 }
 
+async function doExportVideos() {
+  const groups = videoGroups.value;
+  const urls =
+    selectedVideos.value.size > 0
+      ? [...selectedVideos.value]
+      : groups.filter((g) => g.exportable).map((g) => g.url);
+
+  if (!urls.length) {
+    error.value = "没有可导出的完整视频";
+    return;
+  }
+
+  const destination = await open({
+    directory: true,
+    multiple: false,
+    title: "选择视频导出目录",
+  });
+  if (typeof destination !== "string") return;
+
+  exporting.value = true;
+  error.value = "";
+  try {
+    const res = await invoke<ExportResult>("export_videos", {
+      directory: cachePath.value,
+      urls,
+      destination,
+    });
+    status.value = `已合并导出 ${res.exported} 个视频到 ${res.destination}（跳过 ${res.skipped}）`;
+    await invoke("open_in_explorer", { path: destination });
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    exporting.value = false;
+  }
+}
+
+function videoLabel(g: VideoGroup): string {
+  return g.name.length > 42 ? `${g.name.slice(0, 40)}…` : g.name;
+}
+
+async function openCacheUrl(item: CacheUrl) {
+  try {
+    await openUrl(item.url);
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+function onUrlThumbError(url: string) {
+  const next = new Set(urlThumbErrors.value);
+  next.add(url);
+  urlThumbErrors.value = next;
+}
+
 watch(filterKind, async () => {
+  selected.value = new Set();
+  selectedVideos.value = new Set();
+  if (showingVideos.value || showingUrls.value) return;
   const need = filtered.value
     .filter((e) => e.exportable && !previews.value[e.path])
     .filter((e) => !["WEBM", "MP4"].includes(e.kind))
@@ -196,7 +304,7 @@ onMounted(init);
         <p class="eyebrow">HoYoPlay Cache</p>
         <h1>Wallpaper Tool</h1>
         <p class="tagline">
-          识别启动器缓存里的完整图片，预览并导出为可用壁纸。
+          识别启动器缓存里的壁纸、图片与视频分片，预览并导出，或合并还原完整视频。
         </p>
       </div>
       <div class="stats" v-if="result">
@@ -206,11 +314,19 @@ onMounted(init);
         </div>
         <div class="stat">
           <span class="num">{{ result.wallpapers }}</span>
-          <span class="lbl">疑似壁纸</span>
+          <span class="lbl">壁纸</span>
         </div>
         <div class="stat">
-          <span class="num">{{ result.exportable }}</span>
-          <span class="lbl">可导出</span>
+          <span class="num">{{ imageCount }}</span>
+          <span class="lbl">图片</span>
+        </div>
+        <div class="stat">
+          <span class="num">{{ result.videos }}</span>
+          <span class="lbl">可拼视频</span>
+        </div>
+        <div class="stat">
+          <span class="num">{{ result.urls }}</span>
+          <span class="lbl">缓存地址</span>
         </div>
       </div>
     </header>
@@ -234,10 +350,9 @@ onMounted(init);
           <button
             v-for="f in [
               { id: 'wallpaper', label: '壁纸' },
-              { id: 'image', label: '图片' },
+              { id: 'image', label: '图片（小）' },
               { id: 'video', label: '视频' },
-              { id: 'chunk', label: '分片' },
-              { id: 'all', label: '全部' },
+              { id: 'urls', label: '地址' },
             ]"
             :key="f.id"
             type="button"
@@ -248,7 +363,7 @@ onMounted(init);
             {{ f.label }}
           </button>
         </div>
-        <div class="export-row">
+        <div class="export-row" v-if="!showingUrls">
           <button class="btn ghost" type="button" @click="selectVisible">
             全选当前
           </button>
@@ -259,10 +374,15 @@ onMounted(init);
             class="btn accent"
             type="button"
             :disabled="exporting"
-            @click="doExport(true)"
+            @click="doExport()"
           >
-            {{ exporting ? "导出中…" : selectedCount ? `导出选中 (${selectedCount})` : "导出壁纸" }}
+            {{ exportLabel }}
           </button>
+        </div>
+        <div class="export-row" v-else>
+          <span class="url-meta"
+            >共 {{ cacheUrls.length }} 条带日期的媒体地址（点击打开浏览器）</span
+          >
         </div>
       </div>
 
@@ -270,7 +390,81 @@ onMounted(init);
       <p v-if="error" class="status err">{{ error }}</p>
     </section>
 
-    <section class="grid" v-if="filtered.length">
+    <section class="url-list" v-if="showingUrls && cacheUrls.length">
+      <div class="url-list-head">
+        <span>预览</span>
+        <span>日期</span>
+        <span>类型</span>
+        <span>地址</span>
+      </div>
+      <article
+        v-for="item in cacheUrls"
+        :key="item.url"
+        class="url-row"
+        role="button"
+        tabindex="0"
+        @click="openCacheUrl(item)"
+        @keydown.enter="openCacheUrl(item)"
+      >
+        <div class="url-thumb">
+          <img
+            v-if="item.kind === 'image' && !urlThumbErrors.has(item.url)"
+            :src="item.url"
+            :alt="item.extension"
+            loading="lazy"
+            referrerpolicy="no-referrer"
+            @error="onUrlThumbError(item.url)"
+          />
+          <span v-else class="url-thumb-fallback">{{ item.extension.toUpperCase() }}</span>
+        </div>
+        <span class="url-date">{{ item.date }}</span>
+        <span class="url-kind">{{ item.kind === "image" ? "图片" : "视频" }}</span>
+        <div class="url-main">
+          <code class="url-host">{{ item.host }}</code>
+          <span class="url-full" :title="item.url">{{ item.url }}</span>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid" v-else-if="showingVideos && videoGroups.length">
+      <article
+        v-for="group in videoGroups"
+        :key="group.id"
+        class="card video-card"
+        :class="{
+          selected: selectedVideos.has(group.url),
+          muted: !group.exportable,
+        }"
+      >
+        <div class="thumb video-thumb">
+          <div class="placeholder">
+            <span>{{ group.kind }}</span>
+            <small>{{ group.shardCount }} 个分片</small>
+          </div>
+          <span class="badge">{{ group.exportable ? "可合并" : "不完整" }}</span>
+        </div>
+
+        <div class="meta">
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="selectedVideos.has(group.url)"
+              :disabled="!group.exportable"
+              @change="toggleVideo(group.url)"
+            />
+            <code :title="group.url">{{ videoLabel(group) }}</code>
+          </label>
+          <div class="sub">
+            <span>{{ group.kind }}</span>
+            <span>{{ formatBytes(group.totalSize) }}</span>
+          </div>
+          <p class="note">{{ group.note }}</p>
+          <p v-if="group.shardDate" class="note date">缓存日期 {{ group.shardDate }}</p>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid" v-else-if="!showingVideos && !showingUrls && filtered.length">
       <article
         v-for="entry in filtered"
         :key="entry.path"
@@ -295,9 +489,9 @@ onMounted(init);
           <div v-else class="placeholder">
             <span>{{ entry.kind }}</span>
             <small v-if="previewLoading.has(entry.path)">加载预览…</small>
-            <small v-else-if="entry.note">{{ entry.note }}</small>
+            <small v-else-if="entry.note && entry.kind !== 'chunk'">{{ entry.note }}</small>
           </div>
-          <span v-if="entry.likelyWallpaper" class="badge">壁纸</span>
+          <span class="badge">{{ filterKind === "image" ? "图片" : "壁纸" }}</span>
         </button>
 
         <div class="meta">
@@ -319,7 +513,10 @@ onMounted(init);
     </section>
 
     <section v-else-if="!scanning" class="empty">
-      <p>当前筛选下没有文件。试着切换筛选或重新扫描缓存目录。</p>
+      <p v-if="showingVideos">没有识别到可拼接的视频分片。确认目录含有 data_1 与 f_* 文件。</p>
+      <p v-else-if="showingUrls">没有带日期的媒体地址。</p>
+      <p v-else-if="filterKind === 'image'">没有小于 500KB 的图片。</p>
+      <p v-else>当前筛选下没有壁纸。试着重新扫描缓存目录。</p>
     </section>
 
     <div v-if="lightbox" class="lightbox" @click.self="lightbox = null">
@@ -438,8 +635,8 @@ h1 {
 }
 
 .stat {
-  min-width: 96px;
-  padding: 12px 14px;
+  min-width: 84px;
+  padding: 12px 12px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(26, 31, 39, 0.8);
@@ -662,6 +859,159 @@ h1 {
   justify-content: space-between;
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  word-break: break-all;
+}
+
+.note.date {
+  margin-top: 4px;
+  color: var(--warn);
+  word-break: normal;
+}
+
+.url-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.url-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.url-list-head,
+.url-row {
+  display: grid;
+  grid-template-columns: 64px 7.5rem 3.5rem 1fr;
+  gap: 12px;
+  align-items: center;
+}
+
+.url-list-head {
+  padding: 0 12px 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.url-row {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(26, 31, 39, 0.72);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.url-row:hover,
+.url-row:focus-visible {
+  border-color: rgba(62, 207, 178, 0.45);
+  background: rgba(36, 43, 54, 0.9);
+  outline: none;
+}
+
+.url-thumb {
+  width: 56px;
+  height: 40px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg0);
+  display: grid;
+  place-items: center;
+}
+
+.url-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.url-thumb-fallback {
+  font-size: 0.68rem;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.url-date {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.82rem;
+  color: var(--warn);
+}
+
+.url-kind {
+  font-size: 0.78rem;
+  color: var(--accent);
+}
+
+.url-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.url-host {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.url-full {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 860px) {
+  .url-list-head {
+    display: none;
+  }
+
+  .url-row {
+    grid-template-columns: 56px 1fr;
+    grid-template-areas:
+      "thumb date"
+      "thumb kind"
+      "thumb main";
+  }
+
+  .url-thumb {
+    grid-area: thumb;
+  }
+
+  .url-date {
+    grid-area: date;
+  }
+
+  .url-kind {
+    grid-area: kind;
+  }
+
+  .url-main {
+    grid-area: main;
+  }
+}
+
+.video-thumb {
+  cursor: default;
+}
+
+.video-card .check code {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .empty {

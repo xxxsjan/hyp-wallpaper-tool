@@ -9,12 +9,39 @@ export interface CacheEntry {
   note: string;
 }
 
+export interface VideoGroup {
+  id: string;
+  url: string;
+  name: string;
+  extension: string;
+  kind: string;
+  totalSize: number;
+  shardCount: number;
+  exportable: boolean;
+  note: string;
+  shardDate: string | null;
+  shardPaths: string[];
+}
+
+export interface CacheUrl {
+  url: string;
+  host: string;
+  date: string | null;
+  isRange: boolean;
+  kind: string;
+  extension: string;
+}
+
 export interface ScanResult {
   directory: string;
   total: number;
   exportable: number;
   wallpapers: number;
+  videos: number;
+  urls: number;
   entries: CacheEntry[];
+  videoGroups: VideoGroup[];
+  cacheUrls: CacheUrl[];
 }
 
 export interface ExportResult {

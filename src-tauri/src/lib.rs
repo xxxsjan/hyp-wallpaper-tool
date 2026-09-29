@@ -1,5 +1,12 @@
+mod blockfile;
+
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use blockfile::{
+    merge_shards_to_file, parse_cache_urls, parse_video_groups, shard_owner_map, CacheUrl,
+    VideoGroup,
+};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -24,7 +31,11 @@ pub struct ScanResult {
     pub total: usize,
     pub exportable: usize,
     pub wallpapers: usize,
+    pub videos: usize,
+    pub urls: usize,
     pub entries: Vec<CacheEntry>,
+    pub video_groups: Vec<VideoGroup>,
+    pub cache_urls: Vec<CacheUrl>,
 }
 
 #[derive(Debug, Serialize)]
@@ -162,6 +173,10 @@ fn scan_cache(directory: String) -> Result<ScanResult, String> {
         return Err(format!("目录不存在: {}", directory));
     }
 
+    let video_groups = parse_video_groups(&dir)?;
+    let cache_urls = parse_cache_urls(&dir)?;
+    let owners = shard_owner_map(&video_groups);
+
     let mut entries = Vec::new();
     for item in fs::read_dir(&dir).map_err(|e| e.to_string())? {
         let item = item.map_err(|e| e.to_string())?;
@@ -184,7 +199,20 @@ fn scan_cache(directory: String) -> Result<ScanResult, String> {
             }
         }
         match classify_entry(&path) {
-            Ok(entry) => entries.push(entry),
+            Ok(mut entry) => {
+                let key = entry.path.clone();
+                if let Some(url) = owners.get(&key) {
+                    let short = url.rsplit('/').next().unwrap_or(url.as_str());
+                    if entry.kind == "chunk" || !entry.exportable {
+                        entry.kind = "chunk".into();
+                        entry.exportable = false;
+                        entry.note = format!("视频分片 → {short}");
+                    } else if entry.note.is_empty() {
+                        entry.note = format!("属于视频 {short}");
+                    }
+                }
+                entries.push(entry);
+            }
             Err(_) => continue,
         }
     }
@@ -193,6 +221,8 @@ fn scan_cache(directory: String) -> Result<ScanResult, String> {
 
     let exportable = entries.iter().filter(|e| e.exportable).count();
     let wallpapers = entries.iter().filter(|e| e.likely_wallpaper).count();
+    let videos = video_groups.len();
+    let urls = cache_urls.len();
     let total = entries.len();
 
     Ok(ScanResult {
@@ -200,7 +230,11 @@ fn scan_cache(directory: String) -> Result<ScanResult, String> {
         total,
         exportable,
         wallpapers,
+        videos,
+        urls,
         entries,
+        video_groups,
+        cache_urls,
     })
 }
 
@@ -281,6 +315,58 @@ fn export_entries(
 }
 
 #[tauri::command]
+fn export_videos(
+    directory: String,
+    urls: Vec<String>,
+    destination: String,
+) -> Result<ExportResult, String> {
+    let dir = PathBuf::from(&directory);
+    let dest = PathBuf::from(&destination);
+    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+
+    let groups = parse_video_groups(&dir)?;
+    let wanted: HashSet<&str> = urls.iter().map(|s| s.as_str()).collect();
+    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+
+    let mut exported = 0usize;
+    let mut skipped = 0usize;
+    let mut files = Vec::new();
+
+    for group in groups {
+        if !wanted.is_empty() && !wanted.contains(group.url.as_str()) {
+            continue;
+        }
+        if !group.exportable || group.shard_paths.is_empty() {
+            skipped += 1;
+            continue;
+        }
+
+        let stem = group
+            .name
+            .trim_end_matches(&format!(".{}", group.extension));
+        let out_name = format!("{stem}_{stamp}.{}", group.extension);
+        match merge_shards_to_file(&group.shard_paths, &dest, &out_name) {
+            Ok(path) => {
+                exported += 1;
+                files.push(path.to_string_lossy().to_string());
+            }
+            Err(_) => skipped += 1,
+        }
+    }
+
+    if wanted.is_empty() && exported == 0 && skipped == 0 {
+        return Err("没有可导出的完整视频".into());
+    }
+
+    Ok(ExportResult {
+        exported,
+        skipped,
+        destination,
+        files,
+    })
+}
+
+#[tauri::command]
 fn open_in_explorer(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -307,6 +393,7 @@ pub fn run() {
             scan_cache,
             preview_data_url,
             export_entries,
+            export_videos,
             open_in_explorer
         ])
         .run(tauri::generate_context!())
