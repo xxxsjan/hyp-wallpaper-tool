@@ -1,6 +1,6 @@
 # HYP Wallpaper Tool
 
-Tauri + Vue 工具：扫描米哈游启动器（HoYoPlay）Chromium 缓存，识别壁纸/图片并导出；解析 `data_*` 中的 URL 与 Range 分片并合并还原视频。
+Tauri + Vue 工具：扫描马哈鱼启动器缓存，识别壁纸/图片并导出；解析 `data_*` 中的 URL 与 Range 分片并合并还原视频。
 
 ## 功能
 
