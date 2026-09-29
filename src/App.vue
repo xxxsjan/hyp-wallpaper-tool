@@ -14,8 +14,6 @@ import type {
 import { formatBytes } from "./types";
 import logoUrl from "./assets/logo.png";
 
-const DOUYIN_URL =
-  "https://www.douyin.com/user/MS4wLjABAAAAncntmIr8n4wbiIUSt3-CkFjkVVQkgMdYShwYv1_Tc28";
 const QQ_GROUP = "1125408507";
 const qqCopied = ref(false);
 let qqCopiedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -452,14 +450,6 @@ async function openCacheUrl(item: CacheUrl) {
   }
 }
 
-async function openDouyin() {
-  try {
-    await openUrl(DOUYIN_URL);
-  } catch (e) {
-    error.value = String(e);
-  }
-}
-
 async function copyQqGroup() {
   try {
     await navigator.clipboard.writeText(QQ_GROUP);
@@ -580,21 +570,6 @@ onMounted(init);
               />
             </svg>
             <span>{{ qqCopied ? "已复制" : "QQ群" }}</span>
-          </button>
-          <button
-            class="social-btn social-douyin"
-            type="button"
-            title="抖音号 666632746"
-            aria-label="打开作者抖音主页"
-            @click="openDouyin"
-          >
-            <svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true">
-              <path
-                fill="currentColor"
-                d="M33.5 12.2c1.7 1.5 3.7 2.6 6 3.1v5.1c-2.1-.1-4.1-.7-5.9-1.7v12.6c0 6.5-5.3 11.8-11.8 11.8S10 37.8 10 31.3s5.3-11.8 11.8-11.8c.6 0 1.2.1 1.8.2v5.4c-.6-.2-1.2-.3-1.8-.3-3.5 0-6.3 2.8-6.3 6.3s2.8 6.3 6.3 6.3 6.3-2.8 6.3-6.3V8h5.5c0 1.5.5 2.9 1.4 4.2z"
-              />
-            </svg>
-            <span>点个关注</span>
           </button>
           <button class="btn accent" type="button" @click="openGachaModal">
             抽卡地址
@@ -1112,12 +1087,6 @@ code {
     color 0.15s ease,
     border-color 0.15s ease,
     background 0.15s ease;
-}
-
-.social-douyin:hover {
-  color: #fff;
-  border-color: rgba(254, 44, 85, 0.55);
-  background: rgba(254, 44, 85, 0.12);
 }
 
 .social-qq:hover {
