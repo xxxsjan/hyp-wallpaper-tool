@@ -12,6 +12,7 @@ import type {
   VideoGroup,
 } from "./types";
 import { formatBytes } from "./types";
+import logoUrl from "./assets/logo.png";
 
 const cachePath = ref("");
 const scanning = ref(false);
@@ -523,8 +524,13 @@ onMounted(init);
   <div class="app">
     <header class="hero">
       <div class="brand">
-        <p class="eyebrow">HYP Wallpaper Tool</p>
-        <h1>马哈鱼壁纸工具</h1>
+        <div class="brand-row">
+          <img class="brand-logo" :src="logoUrl" alt="logo" width="72" height="72" />
+          <div class="brand-text">
+            <p class="eyebrow">HYP Wallpaper Tool</p>
+            <h1>马哈鱼壁纸工具</h1>
+          </div>
+        </div>
         <p class="tagline">
           获取启动器里的壁纸、图片与视频。
         </p>
@@ -1002,6 +1008,26 @@ code {
   flex-direction: column;
   align-items: flex-end;
   gap: 12px;
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.brand-logo {
+  width: 72px;
+  height: 72px;
+  border-radius: 18px;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.brand-text .eyebrow {
+  margin-bottom: 4px;
 }
 
 .eyebrow {

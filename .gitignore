@@ -27,3 +27,6 @@ dist-ssr
 src-tauri/binaries/ffmpeg*
 !src-tauri/binaries/.gitkeep
 
+# Portable release output
+release/
+

@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "fetch-ffmpeg": "powershell -ExecutionPolicy Bypass -File ./scripts/fetch-ffmpeg.ps1"
+    "fetch-ffmpeg": "powershell -ExecutionPolicy Bypass -File ./scripts/fetch-ffmpeg.ps1",
+    "pack:portable": "powershell -ExecutionPolicy Bypass -File ./scripts/pack-portable.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

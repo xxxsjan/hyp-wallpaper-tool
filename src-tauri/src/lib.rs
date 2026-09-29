@@ -669,6 +669,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            use tauri::Manager;
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_icon(tauri::include_image!("icons/128x128.png"));
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             default_cache_path,
             resolve_cache_path,
