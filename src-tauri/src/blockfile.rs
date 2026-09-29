@@ -185,38 +185,72 @@ fn host_from_url(url: &str) -> String {
 }
 
 /// Returns (kind, extension) for media URLs only.
+/// Address tab only keeps WebP images and WebM videos.
 fn media_meta_from_url(url: &str) -> Option<(&'static str, &'static str)> {
-    let path = url
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(url)
-        .to_ascii_lowercase();
-    const IMAGES: &[(&str, &str)] = &[
-        (".jpg", "jpg"),
-        (".jpeg", "jpeg"),
-        (".png", "png"),
-        (".webp", "webp"),
-        (".gif", "gif"),
-        (".bmp", "bmp"),
-        (".avif", "avif"),
-    ];
-    const VIDEOS: &[(&str, &str)] = &[
-        (".webm", "webm"),
-        (".mp4", "mp4"),
-        (".mov", "mov"),
-        (".mkv", "mkv"),
-    ];
-    for (suffix, ext) in IMAGES {
-        if path.ends_with(suffix) {
-            return Some(("image", *ext));
-        }
+    let path = url_path_for_ext(url)?;
+    if path.ends_with(".webp") {
+        return Some(("image", "webp"));
     }
-    for (suffix, ext) in VIDEOS {
-        if path.ends_with(suffix) {
-            return Some(("video", *ext));
-        }
+    if path.ends_with(".webm") {
+        return Some(("video", "webm"));
     }
     None
+}
+
+/// Path used for extension checks; trims junk after a known media suffix.
+fn url_path_for_ext(url: &str) -> Option<String> {
+    let cleaned = trim_url_to_media(url)?;
+    let path = cleaned
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(&cleaned)
+        .to_ascii_lowercase();
+    Some(path)
+}
+
+/// If a known media extension appears, cut the URL right after it (optional ?query kept).
+fn trim_url_to_media(url: &str) -> Option<String> {
+    const SUFFIXES: &[&str] = &[".webp", ".webm"];
+    let lower = url.to_ascii_lowercase();
+    let mut best_end: Option<usize> = None;
+    for suffix in SUFFIXES {
+        let mut search_from = 0usize;
+        while let Some(rel) = lower[search_from..].find(suffix) {
+            let i = search_from + rel;
+            let end = i + suffix.len();
+            let ok = match lower.as_bytes().get(end) {
+                None => true,
+                Some(b) => matches!(
+                    *b,
+                    b'?' | b'#' | b'"' | b'\'' | b',' | b'}' | b')' | b']' | b' ' | b'\\' | b'<'
+                ),
+            };
+            if ok {
+                best_end = Some(best_end.map_or(end, |e| e.max(end)));
+            }
+            search_from = i + 1;
+            if search_from >= lower.len() {
+                break;
+            }
+        }
+    }
+    let end = best_end?;
+    let mut out = url[..end].to_string();
+    if url.as_bytes().get(end) == Some(&b'?') {
+        let rest = &url[end..];
+        let qend = rest
+            .find(|c: char| {
+                c.is_whitespace()
+                    || matches!(c, '"' | '\'' | '<' | '>' | ')' | ']' | '{' | '}' | ',')
+            })
+            .unwrap_or(rest.len());
+        out.push_str(&rest[..qend]);
+    }
+    if out.starts_with("http://") || out.starts_with("https://") {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 fn collect_urls_from_bytes(data: &[u8], out: &mut BTreeMap<String, bool>) {
@@ -286,7 +320,8 @@ pub fn parse_cache_urls(cache_dir: &Path) -> Result<Vec<CacheUrl>, String> {
 
     let mut urls: Vec<CacheUrl> = found
         .into_iter()
-        .filter_map(|(url, is_range)| {
+        .filter_map(|(raw_url, is_range)| {
+            let url = trim_url_to_media(&raw_url)?;
             let (kind, extension) = media_meta_from_url(&url)?;
             let date = extract_date_from_url(&url)?;
             let host = host_from_url(&url);
@@ -301,9 +336,14 @@ pub fn parse_cache_urls(cache_dir: &Path) -> Result<Vec<CacheUrl>, String> {
         })
         .collect();
 
+    // Deduplicate again after trimming
+    urls.sort_by(|a, b| a.url.cmp(&b.url));
+    urls.dedup_by(|a, b| a.url == b.url);
+
     urls.sort_by(|a, b| {
         b.date
             .cmp(&a.date)
+            .then_with(|| a.extension.cmp(&b.extension))
             .then_with(|| a.url.cmp(&b.url))
     });
 
@@ -560,8 +600,13 @@ mod tests {
         let urls = parse_cache_urls(&dir).expect("parse urls");
         assert!(!urls.is_empty());
         assert!(
-            urls.iter().all(|u| u.kind == "image" || u.kind == "video"),
-            "only media URLs should be listed"
+            urls.iter().any(|u| u.extension == "webp"),
+            "expected .webp URLs from data_1"
+        );
+        assert!(
+            urls.iter()
+                .all(|u| u.extension == "webp" || u.extension == "webm"),
+            "address list should only include webp/webm"
         );
         assert!(
             urls.iter().any(|u| u.date.is_some()),

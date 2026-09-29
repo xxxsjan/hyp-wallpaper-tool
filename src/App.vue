@@ -3,7 +3,13 @@ import { computed, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { CacheEntry, CacheUrl, ExportResult, ScanResult, VideoGroup } from "./types";
+import type {
+  CacheEntry,
+  CacheUrl,
+  ExportResult,
+  ScanResult,
+  VideoGroup,
+} from "./types";
 import { formatBytes } from "./types";
 
 const cachePath = ref("");
@@ -14,6 +20,7 @@ const status = ref("");
 const result = ref<ScanResult | null>(null);
 
 const filterKind = ref<"wallpaper" | "image" | "video" | "urls">("wallpaper");
+const urlExtFilter = ref<"all" | "webp" | "webm">("all");
 const selected = ref<Set<string>>(new Set());
 const selectedVideos = ref<Set<string>>(new Set());
 const previews = ref<Record<string, string>>({});
@@ -50,6 +57,17 @@ const imageCount = computed(
 
 const videoGroups = computed(() => result.value?.videoGroups ?? []);
 const cacheUrls = computed(() => result.value?.cacheUrls ?? []);
+const filteredUrls = computed(() => {
+  const list = cacheUrls.value;
+  if (urlExtFilter.value === "all") return list;
+  return list.filter((u) => u.extension === urlExtFilter.value);
+});
+const urlWebpCount = computed(
+  () => cacheUrls.value.filter((u) => u.extension === "webp").length,
+);
+const urlWebmCount = computed(
+  () => cacheUrls.value.filter((u) => u.extension === "webm").length,
+);
 
 const selectedCount = computed(() =>
   showingVideos.value ? selectedVideos.value.size : selected.value.size,
@@ -91,6 +109,7 @@ async function scan() {
   selectedVideos.value = new Set();
   previews.value = {};
   urlThumbErrors.value = new Set();
+  urlExtFilter.value = "all";
   try {
     result.value = await invoke<ScanResult>("scan_cache", {
       directory: cachePath.value,
@@ -98,7 +117,9 @@ async function scan() {
     status.value = `扫描完成：${result.value.total} 个文件，${result.value.wallpapers} 张壁纸，${result.value.entries.filter((e) => isImageEntry(e) && !e.likelyWallpaper).length} 张图片，${result.value.videos} 个可拼接视频，${result.value.urls} 条缓存地址`;
     const targets = [
       ...result.value.entries.filter((e) => e.likelyWallpaper),
-      ...result.value.entries.filter((e) => isImageEntry(e) && !e.likelyWallpaper),
+      ...result.value.entries.filter(
+        (e) => isImageEntry(e) && !e.likelyWallpaper,
+      ),
     ].slice(0, 24);
     await loadPreviews(targets);
   } catch (e) {
@@ -123,7 +144,8 @@ async function loadPreviews(entries: CacheEntry[]) {
 
 async function loadOnePreview(entry: CacheEntry) {
   if (!entry.exportable) return;
-  if (previews.value[entry.path] || previewLoading.value.has(entry.path)) return;
+  if (previews.value[entry.path] || previewLoading.value.has(entry.path))
+    return;
   if (["WEBM", "MP4"].includes(entry.kind)) return;
 
   previewLoading.value.add(entry.path);
@@ -339,8 +361,15 @@ onMounted(init);
           spellcheck="false"
           placeholder="Cache_Data 目录路径"
         />
-        <button class="btn ghost" type="button" @click="pickFolder">浏览</button>
-        <button class="btn primary" type="button" :disabled="scanning" @click="scan">
+        <button class="btn ghost" type="button" @click="pickFolder">
+          浏览
+        </button>
+        <button
+          class="btn primary"
+          type="button"
+          :disabled="scanning"
+          @click="scan"
+        >
           {{ scanning ? "扫描中…" : "扫描" }}
         </button>
       </div>
@@ -380,9 +409,7 @@ onMounted(init);
           </button>
         </div>
         <div class="export-row" v-else>
-          <span class="url-meta"
-            >共 {{ cacheUrls.length }} 条带日期的媒体地址（点击打开浏览器）</span
-          >
+          <span class="url-meta">点击打开浏览器预览</span>
         </div>
       </div>
 
@@ -390,40 +417,64 @@ onMounted(init);
       <p v-if="error" class="status err">{{ error }}</p>
     </section>
 
-    <section class="url-list" v-if="showingUrls && cacheUrls.length">
-      <div class="url-list-head">
-        <span>预览</span>
-        <span>日期</span>
-        <span>类型</span>
-        <span>地址</span>
+    <section class="url-panel" v-if="showingUrls && cacheUrls.length">
+      <div class="filters url-ext-filters">
+        <button
+          v-for="f in [
+            { id: 'all', label: `全部 (${cacheUrls.length})` },
+            { id: 'webp', label: `WebP图片 (${urlWebpCount})` },
+            { id: 'webm', label: `WebM视频 (${urlWebmCount})` },
+          ]"
+          :key="f.id"
+          type="button"
+          class="chip"
+          :class="{ active: urlExtFilter === f.id }"
+          @click="urlExtFilter = f.id as typeof urlExtFilter"
+        >
+          {{ f.label }}
+        </button>
       </div>
-      <article
-        v-for="item in cacheUrls"
-        :key="item.url"
-        class="url-row"
-        role="button"
-        tabindex="0"
-        @click="openCacheUrl(item)"
-        @keydown.enter="openCacheUrl(item)"
-      >
-        <div class="url-thumb">
-          <img
-            v-if="item.kind === 'image' && !urlThumbErrors.has(item.url)"
-            :src="item.url"
-            :alt="item.extension"
-            loading="lazy"
-            referrerpolicy="no-referrer"
-            @error="onUrlThumbError(item.url)"
-          />
-          <span v-else class="url-thumb-fallback">{{ item.extension.toUpperCase() }}</span>
+
+      <div class="url-list" v-if="filteredUrls.length">
+        <div class="url-list-head">
+          <span>预览</span>
+          <span>日期</span>
+          <span>格式</span>
+          <span>地址</span>
         </div>
-        <span class="url-date">{{ item.date }}</span>
-        <span class="url-kind">{{ item.kind === "image" ? "图片" : "视频" }}</span>
-        <div class="url-main">
-          <code class="url-host">{{ item.host }}</code>
-          <span class="url-full" :title="item.url">{{ item.url }}</span>
-        </div>
-      </article>
+        <article
+          v-for="item in filteredUrls"
+          :key="item.url"
+          class="url-row"
+          role="button"
+          tabindex="0"
+          @click="openCacheUrl(item)"
+          @keydown.enter="openCacheUrl(item)"
+        >
+          <div class="url-thumb">
+            <img
+              v-if="item.kind === 'image' && !urlThumbErrors.has(item.url)"
+              :src="item.url"
+              :alt="item.extension"
+              loading="lazy"
+              referrerpolicy="no-referrer"
+              @error="onUrlThumbError(item.url)"
+            />
+            <span v-else class="url-thumb-fallback">{{
+              item.extension.toUpperCase()
+            }}</span>
+          </div>
+          <span class="url-date">{{ item.date }}</span>
+          <span class="url-kind">{{ item.extension.toUpperCase() }}</span>
+          <div class="url-main">
+            <code class="url-host">{{ item.host }}</code>
+            <span class="url-full" :title="item.url">{{ item.url }}</span>
+          </div>
+        </article>
+      </div>
+      <section v-else class="empty">
+        <p>当前筛选下没有地址。</p>
+      </section>
     </section>
 
     <section class="grid" v-else-if="showingVideos && videoGroups.length">
@@ -441,7 +492,9 @@ onMounted(init);
             <span>{{ group.kind }}</span>
             <small>{{ group.shardCount }} 个分片</small>
           </div>
-          <span class="badge">{{ group.exportable ? "可合并" : "不完整" }}</span>
+          <span class="badge">{{
+            group.exportable ? "可合并" : "不完整"
+          }}</span>
         </div>
 
         <div class="meta">
@@ -459,12 +512,17 @@ onMounted(init);
             <span>{{ formatBytes(group.totalSize) }}</span>
           </div>
           <p class="note">{{ group.note }}</p>
-          <p v-if="group.shardDate" class="note date">缓存日期 {{ group.shardDate }}</p>
+          <p v-if="group.shardDate" class="note date">
+            缓存日期 {{ group.shardDate }}
+          </p>
         </div>
       </article>
     </section>
 
-    <section class="grid" v-else-if="!showingVideos && !showingUrls && filtered.length">
+    <section
+      class="grid"
+      v-else-if="!showingVideos && !showingUrls && filtered.length"
+    >
       <article
         v-for="entry in filtered"
         :key="entry.path"
@@ -489,9 +547,13 @@ onMounted(init);
           <div v-else class="placeholder">
             <span>{{ entry.kind }}</span>
             <small v-if="previewLoading.has(entry.path)">加载预览…</small>
-            <small v-else-if="entry.note && entry.kind !== 'chunk'">{{ entry.note }}</small>
+            <small v-else-if="entry.note && entry.kind !== 'chunk'">{{
+              entry.note
+            }}</small>
           </div>
-          <span class="badge">{{ filterKind === "image" ? "图片" : "壁纸" }}</span>
+          <span class="badge">{{
+            filterKind === "image" ? "图片" : "壁纸"
+          }}</span>
         </button>
 
         <div class="meta">
@@ -513,8 +575,10 @@ onMounted(init);
     </section>
 
     <section v-else-if="!scanning" class="empty">
-      <p v-if="showingVideos">没有识别到可拼接的视频分片。确认目录含有 data_1 与 f_* 文件。</p>
-      <p v-else-if="showingUrls">没有带日期的媒体地址。</p>
+      <p v-if="showingVideos">
+        没有识别到可拼接的视频分片。确认目录含有 data_1 与 f_* 文件。
+      </p>
+      <p v-else-if="showingUrls">没有带日期的 WebP / WebM 地址。</p>
       <p v-else-if="filterKind === 'image'">没有小于 500KB 的图片。</p>
       <p v-else>当前筛选下没有壁纸。试着重新扫描缓存目录。</p>
     </section>
@@ -523,12 +587,17 @@ onMounted(init);
       <div class="lightbox-panel">
         <header>
           <div>
-            <strong>{{ lightbox.entry.name }}.{{ lightbox.entry.extension }}</strong>
+            <strong
+              >{{ lightbox.entry.name }}.{{ lightbox.entry.extension }}</strong
+            >
             <span
-              >{{ lightbox.entry.kind }} · {{ formatBytes(lightbox.entry.size) }}</span
+              >{{ lightbox.entry.kind }} ·
+              {{ formatBytes(lightbox.entry.size) }}</span
             >
           </div>
-          <button class="btn ghost" type="button" @click="lightbox = null">关闭</button>
+          <button class="btn ghost" type="button" @click="lightbox = null">
+            关闭
+          </button>
         </header>
         <img
           v-if="!['WEBM', 'MP4'].includes(lightbox.entry.kind)"
@@ -557,8 +626,16 @@ onMounted(init);
   font-family: "Outfit", sans-serif;
   color: var(--text);
   background:
-    radial-gradient(1200px 600px at 10% -10%, rgba(62, 207, 178, 0.12), transparent 55%),
-    radial-gradient(900px 500px at 100% 0%, rgba(232, 164, 92, 0.1), transparent 50%),
+    radial-gradient(
+      1200px 600px at 10% -10%,
+      rgba(62, 207, 178, 0.12),
+      transparent 55%
+    ),
+    radial-gradient(
+      900px 500px at 100% 0%,
+      rgba(232, 164, 92, 0.1),
+      transparent 50%
+    ),
     var(--bg0);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -659,7 +736,11 @@ h1 {
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: linear-gradient(180deg, rgba(36, 43, 54, 0.9), rgba(26, 31, 39, 0.75));
+  background: linear-gradient(
+    180deg,
+    rgba(36, 43, 54, 0.9),
+    rgba(26, 31, 39, 0.75)
+  );
   box-shadow: var(--shadow);
   margin-bottom: 22px;
 }
@@ -770,7 +851,9 @@ h1 {
   border-radius: 16px;
   overflow: hidden;
   background: rgba(26, 31, 39, 0.88);
-  transition: border-color 0.15s ease, transform 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease;
 }
 
 .card:hover {
@@ -880,6 +963,16 @@ h1 {
   font-size: 0.85rem;
 }
 
+.url-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.url-ext-filters {
+  margin-bottom: 2px;
+}
+
 .url-list {
   display: flex;
   flex-direction: column;
@@ -908,7 +1001,9 @@ h1 {
   border-radius: 12px;
   background: rgba(26, 31, 39, 0.72);
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
 }
 
 .url-row:hover,
