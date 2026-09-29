@@ -1,15 +1,15 @@
 {
   "name": "hyp-wallpaper-tool",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "tauri": "tauri dev",
+    "pack:portable": "node ./scripts/pack-portable.mjs",
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "fetch-ffmpeg": "powershell -ExecutionPolicy Bypass -File ./scripts/fetch-ffmpeg.ps1",
-    "pack:portable": "node ./scripts/pack-portable.mjs"
+    "fetch-ffmpeg": "node ./scripts/fetch-ffmpeg.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
