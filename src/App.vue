@@ -626,7 +626,7 @@ onMounted(init);
           <button
             v-for="f in [
               { id: 'wallpaper', label: '壁纸' },
-              { id: 'image', label: '图片（小）' },
+              { id: 'image', label: '小图片' },
               { id: 'video', label: '视频' },
               { id: 'urls', label: '地址' },
             ]"
