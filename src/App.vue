@@ -143,7 +143,7 @@ const urlExtOptions = computed(() => {
 const pathPlaceholder = computed(() =>
   cacheSource.value === "kr"
     ? "可选 KRLauncher 或 Cache_Data 完整路径"
-    : "可选 HYP\\1_1 或 Cache_Data 完整路径",
+    : "可选 马哈鱼\\1_1 或 Cache_Data 完整路径",
 );
 
 const selectedCount = computed(() =>
