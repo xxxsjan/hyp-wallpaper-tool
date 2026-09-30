@@ -6,6 +6,7 @@
   "scripts": {
     "tauri": "tauri dev",
     "pack:portable": "node ./scripts/pack-portable.mjs",
+    "release:tag": "node ./scripts/release-tag.mjs",
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
