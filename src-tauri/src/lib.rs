@@ -542,6 +542,9 @@ fn ffmpeg_missing_msg() -> String {
 
 fn convert_webm_to_mp4(src: &Path, dest: &Path) -> Result<(), String> {
     let ffmpeg = find_ffmpeg().ok_or_else(ffmpeg_missing_msg)?;
+    // Near-lossless H.264: CRF 17 ≈ visually indistinguishable from source for
+    // most wallpaper footage; slow preset improves quality at the same size.
+    // WebM (VP8/VP9/Opus) cannot be stream-copied into a widely-compatible MP4.
     let status = std::process::Command::new(&ffmpeg)
         .args([
             "-y",
@@ -549,10 +552,16 @@ fn convert_webm_to_mp4(src: &Path, dest: &Path) -> Result<(), String> {
             &src.to_string_lossy(),
             "-c:v",
             "libx264",
+            "-crf",
+            "17",
+            "-preset",
+            "slow",
             "-pix_fmt",
             "yuv420p",
             "-c:a",
             "aac",
+            "-b:a",
+            "192k",
             "-movflags",
             "+faststart",
             &dest.to_string_lossy(),

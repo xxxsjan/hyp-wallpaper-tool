@@ -122,6 +122,21 @@ fn extract_url_from_key(key: &str) -> Option<String> {
     }
 }
 
+/// Chromium sparse Range child key ends with `:signature:child_id` (hex).
+/// `child_id` is the 1MiB chunk index (0 = bytes 0..1MiB-1, 1 = next MiB, …).
+/// Example: `Range_1/0/https://…/file.webm:2fb8f145ce89a8:a` → child_id 10.
+fn extract_range_child_id(key: &str) -> Option<u32> {
+    let rest = key
+        .strip_prefix("Range_")
+        .or_else(|| key.strip_prefix("range_"))
+        .unwrap_or(key);
+    let id_str = rest.rsplit(':').next()?;
+    if id_str.is_empty() || !id_str.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(id_str, 16).ok()
+}
+
 /// Keep query string; stop at whitespace / quotes / angle brackets.
 fn extract_full_url(raw: &str) -> Option<String> {
     let start = if let Some(i) = raw.find("https://") {
@@ -430,7 +445,8 @@ pub fn parse_video_groups(cache_dir: &Path) -> Result<Vec<VideoGroup>, String> {
         return Ok(Vec::new());
     }
 
-    // url -> (file_number -> (path, size, name, modified))
+    // url -> (range_child_id -> (path, size, name, modified))
+    // child_id is Chromium's 1MiB sparse chunk index, NOT the f_* file number.
     let mut by_url: BTreeMap<String, BTreeMap<u32, (PathBuf, u64, String, Option<SystemTime>)>> =
         BTreeMap::new();
 
@@ -467,6 +483,9 @@ pub fn parse_video_groups(cache_dir: &Path) -> Result<Vec<VideoGroup>, String> {
         let Some(_) = media_kind_from_url(&url) else {
             continue;
         };
+        let Some(child_id) = extract_range_child_id(key) else {
+            continue;
+        };
 
         // stream1 = response body
         let body_addr = match read_u32(entry, 56 + 4) {
@@ -491,7 +510,7 @@ pub fn parse_video_groups(cache_dir: &Path) -> Result<Vec<VideoGroup>, String> {
         by_url
             .entry(url)
             .or_default()
-            .insert(file_number, (path, meta.len(), name, modified));
+            .insert(child_id, (path, meta.len(), name, modified));
     }
 
     let mut groups = Vec::new();
@@ -507,8 +526,10 @@ pub fn parse_video_groups(cache_dir: &Path) -> Result<Vec<VideoGroup>, String> {
         let mut total_size = 0u64;
         let mut first_path: Option<PathBuf> = None;
         let mut day_set: BTreeSet<String> = BTreeSet::new();
+        let mut ids: Vec<u32> = Vec::new();
 
-        for (_num, (path, size, _name, modified)) in shards_map.iter() {
+        for (child_id, (path, size, _name, modified)) in shards_map.iter() {
+            ids.push(*child_id);
             if first_path.is_none() {
                 first_path = Some(path.clone());
             }
@@ -520,15 +541,28 @@ pub fn parse_video_groups(cache_dir: &Path) -> Result<Vec<VideoGroup>, String> {
             }
         }
 
-        let exportable = first_path
+        let has_header = first_path
             .as_ref()
             .map(|p| first_bytes_are_media(p))
             .unwrap_or(false);
+        let starts_at_zero = ids.first() == Some(&0);
+        let contiguous = ids.windows(2).all(|w| w[1] == w[0].saturating_add(1));
+        let exportable = has_header && starts_at_zero && contiguous;
 
         let name = filename_from_url(&url);
         let note = if exportable {
             format!(
-                "由 {} 个 Range 分片拼接，可导出完整视频",
+                "由 {} 个 Range 分片按 1MB 序号拼接，可导出完整视频",
+                shard_paths.len()
+            )
+        } else if !starts_at_zero {
+            format!(
+                "找到 {} 个分片，但缺少起始块（child 0），可能不完整",
+                shard_paths.len()
+            )
+        } else if !contiguous {
+            format!(
+                "找到 {} 个分片，但中间有缺口，导出可能花屏/黑屏",
                 shard_paths.len()
             )
         } else {
@@ -600,6 +634,21 @@ pub fn merge_shards_to_file(
     }
     out.flush().map_err(|e| e.to_string())?;
     Ok(out_path)
+}
+
+#[cfg(test)]
+mod range_order_tests {
+    use super::*;
+
+    #[test]
+    fn parse_range_child_id_hex() {
+        let key = "Range_1/0/https://example.com/a.webm:2fb8f145ce89a8:a";
+        assert_eq!(extract_range_child_id(key), Some(10));
+        assert_eq!(
+            extract_url_from_key(key).as_deref(),
+            Some("https://example.com/a.webm")
+        );
+    }
 }
 
 #[cfg(test)]

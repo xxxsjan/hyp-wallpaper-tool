@@ -191,6 +191,10 @@ const exportLabel = computed(() => {
   return `导出选中 (${selectedCount.value})`;
 });
 
+const exportOverlayText = computed(() =>
+  showingVideos.value ? "正在合并导出视频…" : "正在导出文件…",
+);
+
 const exportPngLabel = computed(() => {
   if (exporting.value) return "导出中…";
   const byPath = new Map(
@@ -1068,6 +1072,22 @@ onMounted(init);
     <Transition name="toast">
       <div v-if="toast" class="toast" role="status">{{ toast }}</div>
     </Transition>
+
+    <Transition name="overlay">
+      <div
+        v-if="exporting"
+        class="export-overlay"
+        role="alertdialog"
+        aria-busy="true"
+        aria-live="polite"
+      >
+        <div class="export-overlay-card">
+          <div class="spinner" aria-hidden="true" />
+          <p class="export-overlay-title">{{ exportOverlayText }}</p>
+          <p class="export-overlay-sub">请稍候，完成后会自动关闭</p>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -1398,6 +1418,80 @@ h1 {
 .toast-leave-to {
   opacity: 0;
   transform: translateX(-50%) translateY(-10px);
+}
+
+.export-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 10, 14, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+.export-overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  min-width: 240px;
+  padding: 1.6rem 1.8rem 1.5rem;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(26, 31, 39, 0.96);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+
+.export-overlay-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.export-overlay-sub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 3px solid rgba(62, 207, 178, 0.2);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.overlay-enter-active,
+.overlay-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.overlay-enter-active .export-overlay-card,
+.overlay-leave-active .export-overlay-card {
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.overlay-enter-from,
+.overlay-leave-to {
+  opacity: 0;
+}
+
+.overlay-enter-from .export-overlay-card,
+.overlay-leave-to .export-overlay-card {
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
 }
 
 .grid {
