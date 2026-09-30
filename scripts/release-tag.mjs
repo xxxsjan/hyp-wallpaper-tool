@@ -3,7 +3,7 @@
  * Create git tag vX.Y.Z from package.json, push it, and upload the local
  * portable zip to a GitHub Release.
  *
- * Expects: release/portable/Wallpaper-portable-vX.Y.Z.zip
+ * Expects: release/portable/hyp-wallpaper-tool-portable-vX.Y.Z.zip
  * (produced by `npm run pack:portable`)
  *
  * Usage:
@@ -21,7 +21,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 process.chdir(root);
 
-const product = "Wallpaper";
+const product = "hyp-wallpaper-tool";
 
 function run(cmd, opts = {}) {
   console.log(`$ ${cmd}`);

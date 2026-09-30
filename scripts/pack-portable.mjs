@@ -15,7 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 process.chdir(root);
 
-const product = "Wallpaper";
+const product = "hyp-wallpaper-tool";
 const binDir = path.join(root, "src-tauri", "binaries");
 const releaseDir = path.join(root, "src-tauri", "target", "release");
 
@@ -173,7 +173,7 @@ async function main() {
   fs.rmSync(staging, { recursive: true, force: true });
   fs.mkdirSync(staging, { recursive: true });
 
-  fs.copyFileSync(exeSrc, path.join(staging, "Wallpaper.exe"));
+  fs.copyFileSync(exeSrc, path.join(staging, `${product}.exe`));
   fs.copyFileSync(ffmpegSrc, path.join(staging, "ffmpeg.exe"));
 
   console.log("==> Zip");
