@@ -215,6 +215,10 @@ async function init() {
   try {
     const version = await getVersion();
     await getCurrentWindow().setTitle(`马哈鱼壁纸工具 v${version}`);
+  } catch {
+    // Title is best-effort; don't block scanning if capability is missing.
+  }
+  try {
     cachePath.value = await invoke<string>("default_cache_path", {
       source: cacheSource.value,
     });
