@@ -338,3 +338,162 @@ pub fn find_star_rail_gacha_url() -> Result<GachaUrlResult, String> {
         "未找到抽卡地址。请先在游戏内打开跃迁 → 详情/历史记录，等待页面加载完成后再试。".into(),
     )
 }
+
+// ─── Wuthering Waves (鸣潮) ─────────────────────────────────────────────────
+// Same approach as xxxsjan/electron-app get-url/logs/kuro.js:
+// read Client.log (XOR-decrypt for 3.4.0+), take the latest gacha record URL.
+
+fn wuthering_url_re() -> Regex {
+    Regex::new(
+        r#"https://aki-gm-resources(?:-oversea)?\.aki-game\.(?:com|net)/aki/gacha/index\.html#/record\?[^"\s]+"#,
+    )
+    .expect("wuthering gacha url regex")
+}
+
+/// 3.4.0+ Client.log XOR: skip first 3 bytes; odd byte ^0xA5, even byte ^0xEF.
+fn decrypt_wuthering_client_log(data: &[u8]) -> Vec<u8> {
+    if data.len() < 3 {
+        return data.to_vec();
+    }
+    let mut out = Vec::with_capacity(data.len() - 3);
+    for &b in &data[3..] {
+        let key = if b % 2 == 1 { 0xA5 } else { 0xEF };
+        out.push(b ^ key);
+    }
+    out
+}
+
+fn wuthering_log_text(data: &[u8]) -> String {
+    let as_utf8 = String::from_utf8_lossy(data);
+    if as_utf8.contains("Log file open") || as_utf8.contains("aki-gm-resources") {
+        return as_utf8.into_owned();
+    }
+    let decrypted = decrypt_wuthering_client_log(data);
+    let decrypted_text = String::from_utf8_lossy(&decrypted);
+    if decrypted_text.contains("Log file open") || decrypted_text.contains("aki-gm-resources") {
+        return decrypted_text.into_owned();
+    }
+    as_utf8.into_owned()
+}
+
+fn wuthering_candidate_game_paths() -> Vec<PathBuf> {
+    let home = user_profile();
+    let mut paths = vec![
+        home.join("AppData")
+            .join("LocalLow")
+            .join("KuroGame")
+            .join("Wuthering Waves")
+            .join("Wuthering Waves Game"),
+        home.join("AppData")
+            .join("LocalLow")
+            .join("Kuro Games")
+            .join("Wuthering Waves")
+            .join("Wuthering Waves Game"),
+    ];
+
+    let relatives = [
+        "Wuthering Waves\\Wuthering Waves Game",
+        "game\\Wuthering Waves\\Wuthering Waves Game",
+        "Games\\Wuthering Waves\\Wuthering Waves Game",
+        "Program Files\\Wuthering Waves\\Wuthering Waves Game",
+        "Program Files (x86)\\Wuthering Waves\\Wuthering Waves Game",
+        "SteamLibrary\\steamapps\\common\\Wuthering Waves\\Wuthering Waves Game",
+        "Program Files (x86)\\Steam\\steamapps\\common\\Wuthering Waves\\Wuthering Waves Game",
+    ];
+
+    for letter in b'C'..=b'H' {
+        let drive = format!("{}:\\", letter as char);
+        for rel in relatives {
+            paths.push(PathBuf::from(format!("{drive}{rel}")));
+        }
+    }
+
+    paths
+}
+
+fn find_wuthering_logs_dir() -> Option<PathBuf> {
+    for game_path in wuthering_candidate_game_paths() {
+        let logs_dir = game_path.join("Client").join("Saved").join("Logs");
+        if logs_dir.join("Client.log").is_file() {
+            return Some(logs_dir);
+        }
+    }
+    None
+}
+
+fn list_wuthering_log_files(logs_dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(logs_dir) else {
+        return Vec::new();
+    };
+    let backup_re = Regex::new(r"(?i)^Client-backup-.*\.log$").expect("backup log regex");
+    let mut files: Vec<(PathBuf, SystemTime)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name.eq_ignore_ascii_case("Client.log") || backup_re.is_match(name) {
+            let mtime = file_mtime(&path);
+            files.push((path, mtime));
+        }
+    }
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.into_iter().map(|(p, _)| p).collect()
+}
+
+/// Locate the most recent 唤取 history URL from 鸣潮 Client.log.
+pub fn find_wuthering_gacha_url() -> Result<GachaUrlResult, String> {
+    let Some(logs_dir) = find_wuthering_logs_dir() else {
+        return Err(
+            "未找到鸣潮抽卡日志。请确认已安装并运行过游戏（Wuthering Waves / 鸣潮）。".into(),
+        );
+    };
+
+    let logs = list_wuthering_log_files(&logs_dir);
+    if logs.is_empty() {
+        return Err(format!(
+            "未找到 Client.log：{}",
+            logs_dir.display()
+        ));
+    }
+
+    let re = wuthering_url_re();
+    for log_path in &logs {
+        let bytes = fs::read(log_path).map_err(|e| {
+            format!("读取失败 {}: {e}", log_path.display())
+        })?;
+        let text = wuthering_log_text(&bytes);
+        if let Some(url) = last_url_match(&text, &re) {
+            return Ok(GachaUrlResult {
+                url,
+                source: log_path.to_string_lossy().to_string(),
+                game: "鸣潮".into(),
+            });
+        }
+    }
+
+    Err("未找到抽卡地址。请先在游戏内打开唤取记录，等待页面加载完成后再试。".into())
+}
+
+#[cfg(test)]
+mod wuthering_tests {
+    use super::*;
+
+    #[test]
+    fn find_wuthering_url_if_installed() {
+        let Ok(found) = find_wuthering_gacha_url() else {
+            // No install / no recent gacha open — skip
+            return;
+        };
+        assert!(
+            found.url.contains("aki-gm-resources") && found.url.contains("/aki/gacha/"),
+            "unexpected url: {}",
+            found.url
+        );
+        assert_eq!(found.game, "鸣潮");
+    }
+}

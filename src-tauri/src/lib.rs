@@ -773,6 +773,11 @@ fn get_star_rail_gacha_url() -> Result<GachaUrlResult, String> {
     gacha::find_star_rail_gacha_url()
 }
 
+#[tauri::command]
+fn get_wuthering_gacha_url() -> Result<GachaUrlResult, String> {
+    gacha::find_wuthering_gacha_url()
+}
+
 #[cfg(test)]
 mod resolve_tests {
     use super::*;
@@ -821,7 +826,8 @@ pub fn run() {
             export_videos,
             open_in_explorer,
             get_gacha_url,
-            get_star_rail_gacha_url
+            get_star_rail_gacha_url,
+            get_wuthering_gacha_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

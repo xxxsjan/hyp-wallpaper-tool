@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
@@ -37,7 +39,7 @@ const previewLoading = ref<Set<string>>(new Set());
 const lightbox = ref<{ entry: CacheEntry; url: string } | null>(null);
 const urlThumbErrors = ref<Set<string>>(new Set());
 
-type GachaGame = "genshin" | "starrail";
+type GachaGame = "genshin" | "starrail" | "wuthering";
 const gachaOpen = ref(false);
 const gachaGame = ref<GachaGame>("genshin");
 const gachaLoading = ref(false);
@@ -46,19 +48,36 @@ const gachaCopied = ref(false);
 const gachaError = ref("");
 const gachaStatus = ref("");
 
-const gachaTitle = computed(() =>
-  gachaGame.value === "starrail" ? "崩铁抽卡地址" : "原神抽卡地址",
-);
-const gachaHint = computed(() =>
-  gachaGame.value === "starrail"
-    ? "先在游戏内打开「跃迁 → 详情/历史记录」并等待加载完成，再点「获取」。仅读取本地缓存，不拉取记录。"
-    : "先在游戏内打开「祈愿 → 历史记录」并等待加载完成，再点「获取」。仅读取本地缓存，不拉取记录。",
-);
-const gachaSubtitle = computed(() =>
-  gachaGame.value === "starrail"
-    ? "从本地游戏缓存读取跃迁历史 URL"
-    : "从本地游戏缓存读取祈愿历史 URL",
-);
+const gachaTitle = computed(() => {
+  switch (gachaGame.value) {
+    case "starrail":
+      return "崩铁抽卡地址";
+    case "wuthering":
+      return "鸣潮抽卡地址";
+    default:
+      return "原神抽卡地址";
+  }
+});
+const gachaHint = computed(() => {
+  switch (gachaGame.value) {
+    case "starrail":
+      return "先在游戏内打开「跃迁 → 详情/历史记录」并等待加载完成，再点「获取」。仅读取本地缓存，不拉取记录。";
+    case "wuthering":
+      return "先在游戏内打开「唤取记录」并等待加载完成，再点「获取」。仅读取本地 Client.log，不拉取记录。";
+    default:
+      return "先在游戏内打开「祈愿 → 历史记录」并等待加载完成，再点「获取」。仅读取本地缓存，不拉取记录。";
+  }
+});
+const gachaSubtitle = computed(() => {
+  switch (gachaGame.value) {
+    case "starrail":
+      return "从本地游戏缓存读取跃迁历史 URL";
+    case "wuthering":
+      return "从本地 Client.log 读取唤取历史 URL";
+    default:
+      return "从本地游戏缓存读取祈愿历史 URL";
+  }
+});
 
 const showingVideos = computed(() => filterKind.value === "video");
 const showingUrls = computed(() => filterKind.value === "urls");
@@ -194,6 +213,8 @@ const exportMp4Label = computed(() => {
 
 async function init() {
   try {
+    const version = await getVersion();
+    await getCurrentWindow().setTitle(`马哈鱼壁纸工具 v${version}`);
     cachePath.value = await invoke<string>("default_cache_path", {
       source: cacheSource.value,
     });
@@ -553,7 +574,9 @@ async function fetchGachaUrl() {
     const cmd =
       gachaGame.value === "starrail"
         ? "get_star_rail_gacha_url"
-        : "get_gacha_url";
+        : gachaGame.value === "wuthering"
+          ? "get_wuthering_gacha_url"
+          : "get_gacha_url";
     gachaResult.value = await invoke<GachaUrlResult>(cmd);
     gachaStatus.value = `已获取 ${gachaResult.value.game} 抽卡地址`;
   } catch (e) {
@@ -979,6 +1002,17 @@ onMounted(init);
             @click="selectGachaGame('starrail')"
           >
             崩铁
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="gacha-tab"
+            :class="{ active: gachaGame === 'wuthering' }"
+            :aria-selected="gachaGame === 'wuthering'"
+            :disabled="gachaLoading"
+            @click="selectGachaGame('wuthering')"
+          >
+            鸣潮
           </button>
         </div>
 
