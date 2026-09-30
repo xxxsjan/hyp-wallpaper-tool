@@ -19,6 +19,7 @@ const qqCopied = ref(false);
 let qqCopiedTimer: ReturnType<typeof setTimeout> | null = null;
 
 const cachePath = ref("");
+const cacheSource = ref<"hyp" | "kr">("hyp");
 const scanning = ref(false);
 const exporting = ref(false);
 const error = ref("");
@@ -28,7 +29,7 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null;
 const result = ref<ScanResult | null>(null);
 
 const filterKind = ref<"wallpaper" | "image" | "video" | "urls">("wallpaper");
-const urlExtFilter = ref<"all" | "webp" | "webm">("all");
+const urlExtFilter = ref<string>("all");
 const selected = ref<Set<string>>(new Set());
 const selectedVideos = ref<Set<string>>(new Set());
 const previews = ref<Record<string, string>>({});
@@ -93,11 +94,37 @@ const filteredUrls = computed(() => {
   if (urlExtFilter.value === "all") return list;
   return list.filter((u) => u.extension === urlExtFilter.value);
 });
-const urlWebpCount = computed(
-  () => cacheUrls.value.filter((u) => u.extension === "webp").length,
-);
-const urlWebmCount = computed(
-  () => cacheUrls.value.filter((u) => u.extension === "webm").length,
+const urlExtOptions = computed(() => {
+  const counts = new Map<string, number>();
+  for (const u of cacheUrls.value) {
+    counts.set(u.extension, (counts.get(u.extension) ?? 0) + 1);
+  }
+  const labels: Record<string, string> = {
+    webp: "WebP",
+    webm: "WebM",
+    mp4: "MP4",
+    png: "PNG",
+    jpg: "JPG",
+    gif: "GIF",
+  };
+  const order = ["webp", "png", "jpg", "gif", "webm", "mp4"];
+  const rest = [...counts.keys()]
+    .filter((ext) => !order.includes(ext))
+    .sort();
+  const exts = [...order.filter((e) => counts.has(e)), ...rest];
+  return [
+    { id: "all", label: `全部 (${cacheUrls.value.length})` },
+    ...exts.map((ext) => ({
+      id: ext,
+      label: `${labels[ext] ?? ext.toUpperCase()} (${counts.get(ext) ?? 0})`,
+    })),
+  ];
+});
+
+const pathPlaceholder = computed(() =>
+  cacheSource.value === "kr"
+    ? "可选 KRLauncher 或 Cache_Data 完整路径"
+    : "可选 HYP\\1_1 或 Cache_Data 完整路径",
 );
 
 const selectedCount = computed(() =>
@@ -167,7 +194,20 @@ const exportMp4Label = computed(() => {
 
 async function init() {
   try {
-    cachePath.value = await invoke<string>("default_cache_path");
+    cachePath.value = await invoke<string>("default_cache_path", {
+      source: cacheSource.value,
+    });
+    await scan();
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function switchSource(source: "hyp" | "kr") {
+  if (cacheSource.value === source && cachePath.value) return;
+  cacheSource.value = source;
+  try {
+    cachePath.value = await invoke<string>("default_cache_path", { source });
     await scan();
   } catch (e) {
     error.value = String(e);
@@ -186,8 +226,20 @@ async function pickFolder() {
   }
 }
 
+async function normalizePath() {
+  const raw = cachePath.value.trim();
+  if (!raw) return;
+  try {
+    cachePath.value = await invoke<string>("resolve_cache_path", {
+      directory: raw,
+    });
+  } catch {
+    // keep pasted path; scan will surface the error
+  }
+}
+
 async function scan() {
-  if (!cachePath.value) return;
+  if (!cachePath.value.trim()) return;
   scanning.value = true;
   error.value = "";
   status.value = "";
@@ -197,6 +249,7 @@ async function scan() {
   urlThumbErrors.value = new Set();
   urlExtFilter.value = "all";
   try {
+    await normalizePath();
     result.value = await invoke<ScanResult>("scan_cache", {
       directory: cachePath.value,
     });
@@ -551,7 +604,7 @@ onMounted(init);
           </div>
         </div>
         <p class="tagline">
-          获取启动器里的壁纸、图片与视频。
+          获取马哈鱼 / 鸣潮启动器缓存中的壁纸、图片与视频。
         </p>
       </div>
       <div class="hero-side">
@@ -601,12 +654,30 @@ onMounted(init);
     </header>
 
     <section class="toolbar">
+      <div class="source-row">
+        <button
+          v-for="s in [
+            { id: 'hyp', label: '马哈鱼' },
+            { id: 'kr', label: '鸣潮' },
+          ]"
+          :key="s.id"
+          type="button"
+          class="chip source-chip"
+          :class="{ active: cacheSource === s.id }"
+          :disabled="scanning"
+          @click="switchSource(s.id as 'hyp' | 'kr')"
+        >
+          {{ s.label }}
+        </button>
+      </div>
       <div class="path-row">
         <input
           class="path"
           v-model="cachePath"
           spellcheck="false"
-          placeholder="可选 HYP\\1_1 或 Cache_Data 完整路径"
+          :placeholder="pathPlaceholder"
+          @blur="normalizePath"
+          @keydown.enter.prevent="scan"
         />
         <button class="btn ghost" type="button" @click="pickFolder">
           浏览
@@ -685,16 +756,12 @@ onMounted(init);
     <section class="url-panel" v-if="showingUrls && cacheUrls.length">
       <div class="filters url-ext-filters">
         <button
-          v-for="f in [
-            { id: 'all', label: `全部 (${cacheUrls.length})` },
-            { id: 'webp', label: `WebP图片 (${urlWebpCount})` },
-            { id: 'webm', label: `WebM视频 (${urlWebmCount})` },
-          ]"
+          v-for="f in urlExtOptions"
           :key="f.id"
           type="button"
           class="chip"
           :class="{ active: urlExtFilter === f.id }"
-          @click="urlExtFilter = f.id as typeof urlExtFilter"
+          @click="urlExtFilter = f.id"
         >
           {{ f.label }}
         </button>
@@ -729,7 +796,7 @@ onMounted(init);
               item.extension.toUpperCase()
             }}</span>
           </div>
-          <span class="url-date">{{ item.date }}</span>
+          <span class="url-date">{{ item.date ?? "—" }}</span>
           <span class="url-kind">{{ item.extension.toUpperCase() }}</span>
           <div class="url-main">
             <code class="url-host">{{ item.host }}</code>
@@ -1160,11 +1227,21 @@ h1 {
 .path-row,
 .actions,
 .export-row,
+.source-row,
 .filters {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
   align-items: center;
+}
+
+.source-row {
+  margin-bottom: 10px;
+}
+
+.source-chip {
+  min-width: 6.5rem;
+  justify-content: center;
 }
 
 .path-row {

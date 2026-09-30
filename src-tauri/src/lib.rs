@@ -201,8 +201,136 @@ fn find_cache_data_under(root: &Path, max_depth: usize) -> Option<PathBuf> {
     None
 }
 
-/// Resolve a user-picked HYP path to the real `Cache_Data` directory.
-/// Accepts `...\HYP\1_1`, `...\fedata`, `...\Cache`, or already-`Cache_Data`.
+fn appdata_dir() -> PathBuf {
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| {
+        format!(
+            "{}\\AppData\\Roaming",
+            std::env::var("USERPROFILE").unwrap_or_default()
+        )
+    });
+    PathBuf::from(appdata)
+}
+
+fn default_hyp_cache_path_buf() -> PathBuf {
+    appdata_dir()
+        .join("miHoYo")
+        .join("HYP")
+        .join("1_1")
+        .join("fedata")
+        .join("Cache")
+        .join("Cache_Data")
+}
+
+/// Kuro / 鸣潮 launcher WebView2 disk cache.
+fn default_kr_cache_path_buf() -> PathBuf {
+    let base = appdata_dir().join("KRLauncher");
+    let known = join_parts(
+        &base,
+        &[
+            "G152",
+            "C10003",
+            "KRWebViewUserData",
+            "EBWebView",
+            "Default",
+            "Cache",
+            "Cache_Data",
+        ],
+    );
+    if looks_like_cache_data(&known) {
+        return known;
+    }
+    // G*/C* layout may differ; search under KRLauncher
+    if base.is_dir() {
+        if let Some(found) = find_cache_data_under(&base, 8) {
+            return found;
+        }
+    }
+    known
+}
+
+const CACHE_DATA_SUFFIXES: &[&[&str]] = &[
+    // miHoYo HYP
+    &["fedata", "Cache", "Cache_Data"],
+    &["Cache", "Cache_Data"],
+    &["Cache_Data"],
+    // Kuro KRLauncher WebView2
+    &[
+        "KRWebViewUserData",
+        "EBWebView",
+        "Default",
+        "Cache",
+        "Cache_Data",
+    ],
+    &["EBWebView", "Default", "Cache", "Cache_Data"],
+    &["Default", "Cache", "Cache_Data"],
+];
+
+fn try_cache_suffixes(base: &Path) -> Option<PathBuf> {
+    for parts in CACHE_DATA_SUFFIXES {
+        let candidate = join_parts(base, parts);
+        if looks_like_cache_data(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// From a launcher root / channel folder, try nested version layouts.
+fn try_nested_launcher_layouts(base: &Path) -> Option<PathBuf> {
+    let Ok(entries) = fs::read_dir(base) else {
+        return None;
+    };
+    let mut children: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    children.sort_by(|a, b| b.cmp(a));
+
+    for child in &children {
+        if let Some(found) = try_cache_suffixes(child) {
+            return Some(found);
+        }
+        // HYP: version → fedata/Cache/Cache_Data
+        let hyp = join_parts(child, &["fedata", "Cache", "Cache_Data"]);
+        if looks_like_cache_data(&hyp) {
+            return Some(hyp);
+        }
+    }
+
+    // KRLauncher: G*/C*/KRWebViewUserData/...
+    for game in &children {
+        let Ok(channels) = fs::read_dir(game) else {
+            continue;
+        };
+        for channel in channels.flatten() {
+            let channel_path = channel.path();
+            if !channel_path.is_dir() {
+                continue;
+            }
+            if let Some(found) = try_cache_suffixes(&channel_path) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn try_resolve_from_base(base: &Path) -> Option<PathBuf> {
+    if looks_like_cache_data(base) {
+        return Some(base.to_path_buf());
+    }
+    if let Some(found) = try_cache_suffixes(base) {
+        return Some(found);
+    }
+    if let Some(found) = try_nested_launcher_layouts(base) {
+        return Some(found);
+    }
+    None
+}
+
+/// Resolve a user-picked / pasted launcher path to the real `Cache_Data`.
+/// Accepts HYP / KRLauncher trees, including side folders like `...\C10003\log`.
 fn resolve_cache_data_dir(input: &Path) -> Result<PathBuf, String> {
     if !input.exists() {
         return Err(format!("目录不存在: {}", input.display()));
@@ -211,77 +339,58 @@ fn resolve_cache_data_dir(input: &Path) -> Result<PathBuf, String> {
         return Err(format!("不是目录: {}", input.display()));
     }
 
-    if looks_like_cache_data(input) {
-        return Ok(input.to_path_buf());
-    }
-
-    // Common parent prefixes → append remaining segments
-    const SUFFIXES: &[&[&str]] = &[
-        &["fedata", "Cache", "Cache_Data"],
-        &["Cache", "Cache_Data"],
-        &["Cache_Data"],
-    ];
-    for parts in SUFFIXES {
-        let candidate = join_parts(input, parts);
-        if looks_like_cache_data(&candidate) {
-            return Ok(candidate);
+    // Walk upward so pasting `...\C10003\log` / `...\fedata\...` still works.
+    let mut cur = input.to_path_buf();
+    for _ in 0..12 {
+        if let Some(found) = try_resolve_from_base(&cur) {
+            return Ok(found);
         }
-    }
-
-    // Picked `HYP` (or similar): try version folders then fedata/Cache/Cache_Data
-    if let Ok(entries) = fs::read_dir(input) {
-        let mut version_dirs: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
-        // Prefer names like 1_1; otherwise any child
-        version_dirs.sort_by(|a, b| b.cmp(a));
-        for ver in version_dirs {
-            let candidate = join_parts(&ver, &["fedata", "Cache", "Cache_Data"]);
-            if looks_like_cache_data(&candidate) {
-                return Ok(candidate);
-            }
+        // Shallow search under this ancestor (covers odd nesting)
+        let depth = if path_name_eq(&cur, "KRLauncher") || path_name_eq(&cur, "HYP") {
+            8
+        } else {
+            3
+        };
+        if let Some(found) = find_cache_data_under(&cur, depth) {
+            return Ok(found);
         }
-    }
-
-    if let Some(found) = find_cache_data_under(input, 4) {
-        return Ok(found);
+        match cur.parent() {
+            Some(parent) if parent != cur.as_path() => cur = parent.to_path_buf(),
+            _ => break,
+        }
     }
 
     Err(format!(
-        "未找到 Cache_Data。可选择 HYP\\1_1 或完整路径：{}",
+        "未找到 Cache_Data。可粘贴 HYP\\1_1、KRLauncher\\G152\\C10003、log 旁路目录，或完整 Cache_Data 路径：{}",
         input.display()
     ))
 }
 
+/// `source`: `"hyp"` (default) or `"kr"` / `"wuthering"` / `"鸣潮"`.
 #[tauri::command]
-fn default_cache_path() -> String {
-    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| {
-        format!(
-            "{}\\AppData\\Roaming",
-            std::env::var("USERPROFILE").unwrap_or_default()
-        )
-    });
-    PathBuf::from(appdata)
-        .join("miHoYo")
-        .join("HYP")
-        .join("1_1")
-        .join("fedata")
-        .join("Cache")
-        .join("Cache_Data")
-        .to_string_lossy()
-        .to_string()
+fn default_cache_path(source: Option<String>) -> String {
+    let key = source
+        .as_deref()
+        .unwrap_or("hyp")
+        .trim()
+        .to_ascii_lowercase();
+    let path = match key.as_str() {
+        "kr" | "kuro" | "wuthering" | "ww" | "鸣潮" => default_kr_cache_path_buf(),
+        _ => default_hyp_cache_path_buf(),
+    };
+    path.to_string_lossy().to_string()
 }
 
 #[tauri::command]
 fn resolve_cache_path(directory: String) -> Result<String, String> {
-    resolve_cache_data_dir(Path::new(&directory)).map(|p| p.to_string_lossy().to_string())
+    let trimmed = directory.trim().trim_matches('"').trim_matches('\'');
+    resolve_cache_data_dir(Path::new(trimmed)).map(|p| p.to_string_lossy().to_string())
 }
 
 #[tauri::command]
 fn scan_cache(directory: String) -> Result<ScanResult, String> {
-    let dir = resolve_cache_data_dir(Path::new(&directory))?;
+    let trimmed = directory.trim().trim_matches('"').trim_matches('\'');
+    let dir = resolve_cache_data_dir(Path::new(trimmed))?;
     let directory = dir.to_string_lossy().to_string();
 
     let video_groups = parse_video_groups(&dir)?;
@@ -662,6 +771,33 @@ fn get_gacha_url() -> Result<GachaUrlResult, String> {
 #[tauri::command]
 fn get_star_rail_gacha_url() -> Result<GachaUrlResult, String> {
     gacha::find_star_rail_gacha_url()
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_kr_log_side_folder() {
+        let log = appdata_dir()
+            .join("KRLauncher")
+            .join("G152")
+            .join("C10003")
+            .join("log");
+        if !log.is_dir() {
+            return;
+        }
+        let resolved = resolve_cache_data_dir(&log).expect("resolve from log");
+        assert!(
+            path_name_eq(&resolved, "Cache_Data"),
+            "expected Cache_Data, got {}",
+            resolved.display()
+        );
+        assert!(
+            resolved.to_string_lossy().contains("KRWebViewUserData"),
+            "expected WebView cache path"
+        );
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

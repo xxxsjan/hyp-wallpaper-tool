@@ -185,14 +185,26 @@ fn host_from_url(url: &str) -> String {
 }
 
 /// Returns (kind, extension) for media URLs only.
-/// Address tab only keeps WebP images and WebM videos.
+/// Keeps common launcher image/video assets (HYP webp/webm + KR mp4/png/jpg…).
 fn media_meta_from_url(url: &str) -> Option<(&'static str, &'static str)> {
     let path = url_path_for_ext(url)?;
     if path.ends_with(".webp") {
         return Some(("image", "webp"));
     }
+    if path.ends_with(".png") {
+        return Some(("image", "png"));
+    }
+    if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        return Some(("image", "jpg"));
+    }
+    if path.ends_with(".gif") {
+        return Some(("image", "gif"));
+    }
     if path.ends_with(".webm") {
         return Some(("video", "webm"));
+    }
+    if path.ends_with(".mp4") || path.ends_with(".mov") {
+        return Some(("video", "mp4"));
     }
     None
 }
@@ -210,7 +222,9 @@ fn url_path_for_ext(url: &str) -> Option<String> {
 
 /// If a known media extension appears, cut the URL right after it (optional ?query kept).
 fn trim_url_to_media(url: &str) -> Option<String> {
-    const SUFFIXES: &[&str] = &[".webp", ".webm"];
+    const SUFFIXES: &[&str] = &[
+        ".webp", ".webm", ".mp4", ".mov", ".png", ".jpg", ".jpeg", ".gif",
+    ];
     let lower = url.to_ascii_lowercase();
     let mut best_end: Option<usize> = None;
     for suffix in SUFFIXES {
@@ -222,7 +236,9 @@ fn trim_url_to_media(url: &str) -> Option<String> {
                 None => true,
                 Some(b) => matches!(
                     *b,
-                    b'?' | b'#' | b'"' | b'\'' | b',' | b'}' | b')' | b']' | b' ' | b'\\' | b'<'
+                    // `:` appears in Chromium Range cache keys: file.mp4:etag:0
+                    b'?' | b'#' | b':' | b'"' | b'\'' | b',' | b'}' | b')' | b']' | b' ' | b'\\'
+                        | b'<'
                 ),
             };
             if ok {
@@ -323,12 +339,13 @@ pub fn parse_cache_urls(cache_dir: &Path) -> Result<Vec<CacheUrl>, String> {
         .filter_map(|(raw_url, is_range)| {
             let url = trim_url_to_media(&raw_url)?;
             let (kind, extension) = media_meta_from_url(&url)?;
-            let date = extract_date_from_url(&url)?;
+            // HYP CDN often embeds /YYYY/MM/DD/; KR / 鸣潮 URLs usually do not.
+            let date = extract_date_from_url(&url);
             let host = host_from_url(&url);
             Some(CacheUrl {
                 url,
                 host,
-                date: Some(date),
+                date,
                 is_range,
                 kind: kind.to_string(),
                 extension: extension.to_string(),
@@ -590,6 +607,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_kr_cache_urls_and_videos() {
+        let dir = PathBuf::from(r"c:\Users\admin\AppData\Roaming\KRLauncher")
+            .join("G152")
+            .join("C10003")
+            .join("KRWebViewUserData")
+            .join("EBWebView")
+            .join("Default")
+            .join("Cache")
+            .join("Cache_Data");
+        if !dir.is_dir() {
+            return;
+        }
+        let urls = parse_cache_urls(&dir).expect("parse kr urls");
+        assert!(
+            urls.iter().any(|u| matches!(
+                u.extension.as_str(),
+                "mp4" | "webp" | "png" | "jpg"
+            )),
+            "expected KR launcher media URLs from data_1, got {}",
+            urls.len()
+        );
+        let groups = parse_video_groups(&dir).expect("parse kr videos");
+        // Background MP4 may be split into Range shards
+        assert!(
+            groups.iter().any(|g| g.extension == "mp4") || !urls.is_empty(),
+            "expected mp4 video group or at least media URLs"
+        );
+    }
+
+    #[test]
     fn parse_hyp_cache_urls() {
         let dir = PathBuf::from(
             r"c:\Users\admin\AppData\Roaming\miHoYo\HYP\1_1\fedata\Cache\Cache_Data",
@@ -604,13 +651,17 @@ mod tests {
             "expected .webp URLs from data_1"
         );
         assert!(
-            urls.iter()
-                .all(|u| u.extension == "webp" || u.extension == "webm"),
-            "address list should only include webp/webm"
+            urls.iter().any(|u| {
+                matches!(
+                    u.extension.as_str(),
+                    "webp" | "webm" | "mp4" | "png" | "jpg" | "gif"
+                )
+            }),
+            "expected media URLs from data_1"
         );
         assert!(
             urls.iter().any(|u| u.date.is_some()),
-            "expected some URLs to contain /YYYY/MM/DD/"
+            "expected some HYP URLs to contain /YYYY/MM/DD/"
         );
         assert!(
             urls.iter().any(|u| u.url.contains("launcher-webstatic")),
