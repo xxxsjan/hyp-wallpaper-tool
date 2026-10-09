@@ -27,15 +27,54 @@ if (fs.existsSync(targetPath)) {
 }
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hyp-ffmpeg-"));
-const zipPath = path.join(tmp, "ffmpeg-essentials.zip");
+const zipPath = path.join(tmp, "ffmpeg-build.zip");
+const downloadUrls = [
+  process.env.FFMPEG_DOWNLOAD_URL,
+  "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
+  "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+].filter(Boolean);
 
-async function download(from, to) {
-  console.log(`Downloading ${from} ...`);
-  const res = await fetch(from, { redirect: "follow" });
-  if (!res.ok) {
-    throw new Error(`Download failed: ${res.status} ${res.statusText}`);
+async function download(from, to, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    console.log(`Downloading ${from} (attempt ${attempt}/${retries}) ...`);
+    try {
+      const res = await fetch(from, {
+        redirect: "follow",
+        headers: {
+          "User-Agent": "hyp-wallpaper-tool/1.0",
+        },
+      });
+      if (!res.ok) {
+        throw new Error(`Download failed: ${res.status} ${res.statusText}`);
+      }
+      if (fs.existsSync(to)) {
+        fs.rmSync(to, { force: true });
+      }
+      await pipeline(Readable.fromWeb(res.body), createWriteStream(to));
+      return;
+    } catch (error) {
+      if (attempt === retries) {
+        throw error;
+      }
+      console.warn(`Download attempt ${attempt} failed: ${error.message}. Retrying...`);
+      await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+    }
   }
-  await pipeline(Readable.fromWeb(res.body), createWriteStream(to));
+}
+
+async function downloadAny(to) {
+  let lastError;
+  for (const url of downloadUrls) {
+    try {
+      await download(url, to);
+      console.log(`Using mirror: ${url}`);
+      return url;
+    } catch (error) {
+      lastError = error;
+      console.warn(`Mirror failed: ${url}\n${error.message}`);
+    }
+  }
+  throw new Error(`All ffmpeg mirrors failed. Last error: ${lastError?.message ?? "unknown"}`);
 }
 
 function findFfmpegExe(dir) {
@@ -58,7 +97,7 @@ function findFfmpegExe(dir) {
 }
 
 try {
-  await download(url, zipPath);
+  await downloadAny(zipPath);
 
   console.log("Extracting...");
   try {

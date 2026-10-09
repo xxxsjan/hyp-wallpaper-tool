@@ -532,6 +532,17 @@ async function openCacheUrl(item: CacheUrl) {
   }
 }
 
+function cacheUrlFilename(url: string): string {
+  const pathname = url.split(/[?#]/, 1)[0];
+  const segments = pathname.split("/").filter(Boolean);
+  const filename = segments[segments.length - 1] ?? url;
+  try {
+    return decodeURIComponent(filename);
+  } catch {
+    return filename;
+  }
+}
+
 async function copyQqGroup() {
   try {
     await navigator.clipboard.writeText(QQ_GROUP);
@@ -798,17 +809,11 @@ onMounted(init);
         </button>
       </div>
 
-      <div class="url-list" v-if="filteredUrls.length">
-        <div class="url-list-head">
-          <span>预览</span>
-          <span>日期</span>
-          <span>格式</span>
-          <span>地址</span>
-        </div>
+      <div class="url-grid" v-if="filteredUrls.length">
         <article
           v-for="item in filteredUrls"
           :key="item.url"
-          class="url-row"
+          class="url-card"
           role="button"
           tabindex="0"
           @click="openCacheUrl(item)"
@@ -827,12 +832,13 @@ onMounted(init);
               item.extension.toUpperCase()
             }}</span>
           </div>
-          <span class="url-date">{{ item.date ?? "—" }}</span>
-          <span class="url-kind">{{ item.extension.toUpperCase() }}</span>
-          <div class="url-main">
-            <code class="url-host">{{ item.host }}</code>
-            <span class="url-full" :title="item.url">{{ item.url }}</span>
+          <div class="url-card-meta">
+            <span class="url-date">{{ item.date ?? "—" }}</span>
+            <span class="url-kind">{{ item.extension.toUpperCase() }}</span>
           </div>
+          <span class="url-filename" :title="cacheUrlFilename(item.url)">{{
+            cacheUrlFilename(item.url)
+          }}</span>
         </article>
       </div>
       <section v-else class="empty">
@@ -1736,52 +1742,35 @@ h1 {
   margin-bottom: 2px;
 }
 
-.url-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.url-list-head,
-.url-row {
+.url-grid {
   display: grid;
-  grid-template-columns: 64px 7.5rem 3.5rem 1fr;
-  gap: 12px;
-  align-items: center;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 14px;
 }
 
-.url-list-head {
-  padding: 0 12px 6px;
-  color: var(--muted);
-  font-size: 0.75rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.url-row {
-  padding: 8px 12px;
+.url-card {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(26, 31, 39, 0.72);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(26, 31, 39, 0.88);
   cursor: pointer;
   transition:
     border-color 0.15s ease,
-    background 0.15s ease;
+    transform 0.15s ease;
 }
 
-.url-row:hover,
-.url-row:focus-visible {
-  border-color: rgba(62, 207, 178, 0.45);
-  background: rgba(36, 43, 54, 0.9);
+.url-card:hover,
+.url-card:focus-visible {
+  transform: translateY(-2px);
+  border-color: rgba(62, 207, 178, 0.65);
   outline: none;
 }
 
 .url-thumb {
-  width: 56px;
-  height: 40px;
-  border-radius: 8px;
+  width: 100%;
+  aspect-ratio: 16 / 10;
   overflow: hidden;
-  background: var(--bg0);
+  background: #0d1014;
   display: grid;
   place-items: center;
 }
@@ -1794,9 +1783,17 @@ h1 {
 }
 
 .url-thumb-fallback {
-  font-size: 0.68rem;
+  font-size: 0.85rem;
   color: var(--muted);
   font-family: "IBM Plex Mono", monospace;
+}
+
+.url-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 0;
 }
 
 .url-date {
@@ -1808,57 +1805,19 @@ h1 {
 .url-kind {
   font-size: 0.78rem;
   color: var(--accent);
+  flex: none;
 }
 
-.url-main {
+.url-filename {
+  display: block;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.url-host {
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
-.url-full {
+  padding: 4px 12px 12px;
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.72rem;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-@media (max-width: 860px) {
-  .url-list-head {
-    display: none;
-  }
-
-  .url-row {
-    grid-template-columns: 56px 1fr;
-    grid-template-areas:
-      "thumb date"
-      "thumb kind"
-      "thumb main";
-  }
-
-  .url-thumb {
-    grid-area: thumb;
-  }
-
-  .url-date {
-    grid-area: date;
-  }
-
-  .url-kind {
-    grid-area: kind;
-  }
-
-  .url-main {
-    grid-area: main;
-  }
 }
 
 .video-thumb {
