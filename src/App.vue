@@ -9,12 +9,12 @@ import type {
   CacheEntry,
   CacheUrl,
   ExportResult,
-  GachaUrlResult,
   ScanResult,
   VideoGroup,
 } from "./types";
 import { formatBytes } from "./types";
 import logoUrl from "./assets/logo.png";
+import GachaModal from "./components/GachaModal.vue";
 
 const QQ_GROUP = "1125408507";
 const qqCopied = ref(false);
@@ -39,45 +39,7 @@ const previewLoading = ref<Set<string>>(new Set());
 const lightbox = ref<{ entry: CacheEntry; url: string } | null>(null);
 const urlThumbErrors = ref<Set<string>>(new Set());
 
-type GachaGame = "genshin" | "starrail" | "wuthering";
 const gachaOpen = ref(false);
-const gachaGame = ref<GachaGame>("genshin");
-const gachaLoading = ref(false);
-const gachaResult = ref<GachaUrlResult | null>(null);
-const gachaCopied = ref(false);
-const gachaError = ref("");
-const gachaStatus = ref("");
-
-const gachaTitle = computed(() => {
-  switch (gachaGame.value) {
-    case "starrail":
-      return "崩铁抽卡地址";
-    case "wuthering":
-      return "鸣潮抽卡地址";
-    default:
-      return "原神抽卡地址";
-  }
-});
-const gachaHint = computed(() => {
-  switch (gachaGame.value) {
-    case "starrail":
-      return "先在游戏内打开「跃迁 → 详情/历史记录」并等待加载完成，再点「获取」。仅读取本地缓存，不拉取记录。";
-    case "wuthering":
-      return "先在游戏内打开「唤取记录」并等待加载完成，再点「获取」。仅读取本地 Client.log，不拉取记录。";
-    default:
-      return "先在游戏内打开「祈愿 → 历史记录」并等待加载完成，再点「获取」。仅读取本地缓存，不拉取记录。";
-  }
-});
-const gachaSubtitle = computed(() => {
-  switch (gachaGame.value) {
-    case "starrail":
-      return "从本地游戏缓存读取跃迁历史 URL";
-    case "wuthering":
-      return "从本地 Client.log 读取唤取历史 URL";
-    default:
-      return "从本地游戏缓存读取祈愿历史 URL";
-  }
-});
 
 const showingVideos = computed(() => filterKind.value === "video");
 const showingUrls = computed(() => filterKind.value === "urls");
@@ -566,58 +528,6 @@ function onUrlThumbError(url: string) {
 
 function openGachaModal() {
   gachaOpen.value = true;
-  gachaCopied.value = false;
-  gachaError.value = "";
-  gachaStatus.value = "";
-}
-
-function closeGachaModal() {
-  gachaOpen.value = false;
-}
-
-function selectGachaGame(game: GachaGame) {
-  if (gachaGame.value === game) return;
-  gachaGame.value = game;
-  gachaResult.value = null;
-  gachaCopied.value = false;
-  gachaError.value = "";
-  gachaStatus.value = "";
-}
-
-async function fetchGachaUrl() {
-  gachaLoading.value = true;
-  gachaCopied.value = false;
-  gachaError.value = "";
-  gachaStatus.value = "";
-  try {
-    const cmd =
-      gachaGame.value === "starrail"
-        ? "get_star_rail_gacha_url"
-        : gachaGame.value === "wuthering"
-          ? "get_wuthering_gacha_url"
-          : "get_gacha_url";
-    gachaResult.value = await invoke<GachaUrlResult>(cmd);
-    gachaStatus.value = `已获取 ${gachaResult.value.game} 抽卡地址`;
-  } catch (e) {
-    gachaResult.value = null;
-    gachaError.value = String(e);
-  } finally {
-    gachaLoading.value = false;
-  }
-}
-
-async function copyGachaUrl() {
-  if (!gachaResult.value?.url) return;
-  try {
-    await navigator.clipboard.writeText(gachaResult.value.url);
-    gachaCopied.value = true;
-    gachaStatus.value = "抽卡地址已复制到剪贴板";
-    window.setTimeout(() => {
-      gachaCopied.value = false;
-    }, 2000);
-  } catch (e) {
-    gachaError.value = String(e);
-  }
 }
 
 watch(filterKind, async () => {
@@ -977,103 +887,7 @@ onMounted(init);
       </div>
     </div>
 
-    <div
-      v-if="gachaOpen"
-      class="lightbox"
-      @click.self="closeGachaModal"
-      @keydown.esc="closeGachaModal"
-    >
-      <div class="lightbox-panel gacha-modal" role="dialog" aria-modal="true">
-        <header>
-          <div>
-            <strong>{{ gachaTitle }}</strong>
-            <span>{{ gachaSubtitle }}</span>
-          </div>
-          <button class="btn ghost" type="button" @click="closeGachaModal">
-            关闭
-          </button>
-        </header>
-
-        <div class="gacha-tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            class="gacha-tab"
-            :class="{ active: gachaGame === 'genshin' }"
-            :aria-selected="gachaGame === 'genshin'"
-            :disabled="gachaLoading"
-            @click="selectGachaGame('genshin')"
-          >
-            原神
-          </button>
-          <button
-            type="button"
-            role="tab"
-            class="gacha-tab"
-            :class="{ active: gachaGame === 'starrail' }"
-            :aria-selected="gachaGame === 'starrail'"
-            :disabled="gachaLoading"
-            @click="selectGachaGame('starrail')"
-          >
-            崩铁
-          </button>
-          <button
-            type="button"
-            role="tab"
-            class="gacha-tab"
-            :class="{ active: gachaGame === 'wuthering' }"
-            :aria-selected="gachaGame === 'wuthering'"
-            :disabled="gachaLoading"
-            @click="selectGachaGame('wuthering')"
-          >
-            鸣潮
-          </button>
-        </div>
-
-        <p class="gacha-hint">{{ gachaHint }}</p>
-
-        <div class="gacha-actions">
-          <button
-            class="btn primary"
-            type="button"
-            :disabled="gachaLoading"
-            @click="fetchGachaUrl"
-          >
-            {{ gachaLoading ? "获取中…" : "获取抽卡地址" }}
-          </button>
-          <button
-            class="btn accent"
-            type="button"
-            :disabled="!gachaResult?.url"
-            @click="copyGachaUrl"
-          >
-            {{ gachaCopied ? "已复制" : "复制" }}
-          </button>
-        </div>
-
-        <p v-if="gachaStatus" class="status ok">{{ gachaStatus }}</p>
-        <p v-if="gachaError" class="status err">{{ gachaError }}</p>
-
-        <div class="gacha-card" v-if="gachaResult">
-          <div class="gacha-meta">
-            <span class="gacha-game">{{ gachaResult.game }}</span>
-            <code class="gacha-source" :title="gachaResult.source">{{
-              gachaResult.source
-            }}</code>
-          </div>
-          <textarea
-            class="gacha-url"
-            readonly
-            spellcheck="false"
-            :value="gachaResult.url"
-            @focus="($event.target as HTMLTextAreaElement).select()"
-          />
-        </div>
-        <p v-else-if="!gachaLoading && !gachaError" class="gacha-empty">
-          尚未获取抽卡地址。
-        </p>
-      </div>
-    </div>
+    <GachaModal v-model="gachaOpen" />
 
     <Transition name="toast">
       <div v-if="toast" class="toast" role="status">{{ toast }}</div>
@@ -1621,115 +1435,6 @@ h1 {
 .url-meta {
   color: var(--muted);
   font-size: 0.85rem;
-}
-
-.gacha-modal {
-  width: min(640px, 100%);
-}
-
-.gacha-tabs {
-  display: flex;
-  gap: 6px;
-  margin: 0 0 14px;
-  padding: 4px;
-  border-radius: 12px;
-  background: rgba(18, 21, 26, 0.72);
-  border: 1px solid var(--line);
-}
-
-.gacha-tab {
-  flex: 1;
-  border: 0;
-  border-radius: 9px;
-  padding: 8px 12px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.9rem;
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.gacha-tab:hover:not(:disabled) {
-  color: var(--text);
-}
-
-.gacha-tab.active {
-  background: var(--bg2);
-  color: var(--text);
-}
-
-.gacha-tab:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.gacha-hint {
-  margin: 0 0 14px;
-  color: var(--muted);
-  line-height: 1.55;
-  font-size: 0.92rem;
-}
-
-.gacha-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.gacha-card {
-  margin-top: 8px;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: rgba(26, 31, 39, 0.78);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.gacha-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 14px;
-  align-items: baseline;
-}
-
-.gacha-game {
-  color: var(--accent);
-  font-weight: 600;
-  font-size: 0.9rem;
-}
-
-.gacha-source {
-  color: var(--muted);
-  font-size: 0.75rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
-
-.gacha-url {
-  width: 100%;
-  min-height: 140px;
-  resize: vertical;
-  padding: 12px;
-  border-radius: 12px;
-  border: 1px solid var(--line);
-  background: var(--bg0);
-  color: var(--text);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 0.78rem;
-  line-height: 1.45;
-  word-break: break-all;
-}
-
-.gacha-empty {
-  margin: 8px 0 0;
-  color: var(--muted);
-  font-size: 0.9rem;
 }
 
 .url-panel {
