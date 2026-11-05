@@ -37,6 +37,7 @@ const selectedVideos = ref<Set<string>>(new Set());
 const previews = ref<Record<string, string>>({});
 const previewLoading = ref<Set<string>>(new Set());
 const lightbox = ref<{ entry: CacheEntry; url: string } | null>(null);
+const urlVideoPreview = ref<CacheUrl | null>(null);
 const urlThumbErrors = ref<Set<string>>(new Set());
 
 const gachaOpen = ref(false);
@@ -486,9 +487,30 @@ function videoLabel(g: VideoGroup): string {
   return g.name.length > 42 ? `${g.name.slice(0, 40)}…` : g.name;
 }
 
-async function openCacheUrl(item: CacheUrl) {
+function isVideoCacheUrl(item: CacheUrl): boolean {
+  return item.kind === "video";
+}
+
+function openCacheUrl(item: CacheUrl) {
+  if (isVideoCacheUrl(item)) {
+    urlVideoPreview.value = item;
+  } else {
+    void openCacheUrlInBrowser(item);
+  }
+}
+
+async function openCacheUrlInBrowser(item: CacheUrl) {
   try {
     await openUrl(item.url);
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function copyCacheUrl(item: CacheUrl) {
+  try {
+    await navigator.clipboard.writeText(item.url);
+    showToast("地址已复制");
   } catch (e) {
     error.value = String(e);
   }
@@ -697,7 +719,7 @@ onMounted(init);
           </button>
         </div>
         <div class="export-row" v-else>
-          <span class="url-meta">点击打开浏览器预览</span>
+          <span class="url-meta">点击预览播放 WebM，右键复制地址</span>
         </div>
       </div>
 
@@ -726,8 +748,14 @@ onMounted(init);
           class="url-card"
           role="button"
           tabindex="0"
+          :title="
+            isVideoCacheUrl(item)
+              ? '点击预览播放，右键复制地址'
+              : '点击打开浏览器，右键复制地址'
+          "
           @click="openCacheUrl(item)"
           @keydown.enter="openCacheUrl(item)"
+          @contextmenu.prevent="copyCacheUrl(item)"
         >
           <div class="url-thumb">
             <img
@@ -739,7 +767,9 @@ onMounted(init);
               @error="onUrlThumbError(item.url)"
             />
             <span v-else class="url-thumb-fallback">{{
-              item.extension.toUpperCase()
+              isVideoCacheUrl(item)
+                ? `▶ ${item.extension.toUpperCase()}`
+                : item.extension.toUpperCase()
             }}</span>
           </div>
           <div class="url-card-meta">
@@ -884,6 +914,55 @@ onMounted(init);
           :alt="lightbox.entry.name"
         />
         <video v-else :src="lightbox.url" controls autoplay />
+      </div>
+    </div>
+
+    <div
+      v-if="urlVideoPreview"
+      class="lightbox"
+      @click.self="urlVideoPreview = null"
+    >
+      <div class="lightbox-panel">
+        <header>
+          <div>
+            <strong :title="urlVideoPreview.url">{{
+              cacheUrlFilename(urlVideoPreview.url)
+            }}</strong>
+            <span
+              >{{ urlVideoPreview.extension.toUpperCase() }} ·
+              {{ urlVideoPreview.date ?? "远程地址" }}</span
+            >
+          </div>
+          <div class="lightbox-actions">
+            <button
+              class="btn ghost"
+              type="button"
+              @click="copyCacheUrl(urlVideoPreview)"
+            >
+              复制地址
+            </button>
+            <button
+              class="btn ghost"
+              type="button"
+              @click="openCacheUrlInBrowser(urlVideoPreview)"
+            >
+              浏览器打开
+            </button>
+            <button
+              class="btn ghost"
+              type="button"
+              @click="urlVideoPreview = null"
+            >
+              关闭
+            </button>
+          </div>
+        </header>
+        <video
+          :src="urlVideoPreview.url"
+          controls
+          autoplay
+          referrerpolicy="no-referrer"
+        />
       </div>
     </div>
 
@@ -1571,7 +1650,15 @@ h1 {
   justify-content: space-between;
   gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
   margin-bottom: 12px;
+}
+
+.lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
 }
 
 .lightbox-panel header span {
